@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "github": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/x/repos/readonly",
+      "headers": {
+        "Authorization": "$GITHUB_MCP_AUTHORIZATION",
+        "X-MCP-Toolsets": "repos",
+        "X-MCP-Readonly": "true"
+      },
+      "description": "Official GitHub MCP remote server, restricted to read-only repository tools."
+    }
+  },
+  "mcpInterceptors": [
+    "lark_doc_whisper.agent.github_mcp_policy:build_github_mcp_interceptor"
+  ],
+  "skills": {}
+}

@@ -1,0 +1,51 @@
+# systemd unit template for lark-doc-whisper gateway.
+#
+# Install:
+#   1. Fill in the <PLACEHOLDER> values below (User, WorkingDirectory, paths).
+#   2. sudo cp deploy/lark-doc-whisper.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now lark-doc-whisper
+#
+# See docs/deploy_sop.md for the full deployment SOP.
+
+[Unit]
+Description=lark-doc-whisper Feishu comment gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Run as a dedicated non-root user in production.
+User=<DEPLOY_USER>
+Group=<DEPLOY_GROUP>
+
+# Absolute path to the checked-out repo.
+WorkingDirectory=<REPO_DIR>
+
+# Secrets: LARK_APP_ID / LARK_APP_SECRET / LLM_API_KEY.
+# Point this at the service user's ~/.env (operational default) or the
+# project-level configs/.env. systemd needs an absolute path; keep it out of git.
+EnvironmentFile=/home/<DEPLOY_USER>/.env
+# Alternatively: EnvironmentFile=<REPO_DIR>/configs/.env
+
+# Optional: pin the instance slot (default 0). Uncomment for same-host LB.
+# Environment=WHISPER_SLOT=0
+
+# uv must be on PATH for the service user; adjust if installed elsewhere.
+ExecStart=/usr/bin/env uv run python -m lark_doc_whisper
+
+# Graceful shutdown: SIGTERM lets the gateway send a WS close frame.
+# NEVER use SIGKILL here — it leaves zombie WS connections on Feishu's side.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Auto-restart on crash is systemd's job (the gateway does not self-restart).
+Restart=on-failure
+RestartSec=5
+
+# Basic hardening (loosen if it conflicts with your runtime/ writes).
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

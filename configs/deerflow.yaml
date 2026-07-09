@@ -1,0 +1,42 @@
+config_version: 15
+
+# OpenAI-compatible model endpoint for lark-doc-whisper.
+# Works with any provider that speaks the OpenAI protocol (Ark/Doubao,
+# OpenAI, DeepSeek, a local vLLM server, etc.). Ark is only an example below.
+# Fill model / base_url at deploy time; LLM_API_KEY comes from the environment.
+models:
+  - name: default
+    display_name: Default LLM
+    use: langchain_openai:ChatOpenAI
+    model: __fill_me__           # model / endpoint id, e.g. Ark: ep-xxxxxxxx
+    api_key: $LLM_API_KEY
+    base_url: __fill_me__        # OpenAI-compatible base_url
+    request_timeout: 600.0
+    max_retries: 2
+
+memory:
+  enabled: false
+
+# Minimal toolset — all context expansion is mediated by program gates.
+tool_groups:
+  - name: doc:context
+  - name: user:memory
+  - name: url:fetch
+
+tools:
+  - name: get_doc_context
+    group: doc:context
+    use: lark_doc_whisper.agent.doc_context:get_doc_context_tool
+  - name: search_user_recent_history
+    group: user:memory
+    use: lark_doc_whisper.agent.user_history:search_user_recent_history_tool
+  - name: fetch_url_content
+    group: url:fetch
+    use: lark_doc_whisper.agent.url_fetch:fetch_url_content_tool
+
+sandbox:
+  use: deerflow.sandbox.local:LocalSandboxProvider
+  allow_host_bash: false
+  bash_output_max_chars: 20000
+  read_file_output_max_chars: 50000
+  ls_output_max_chars: 20000

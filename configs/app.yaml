@@ -1,0 +1,51 @@
+# Application configuration (non-secret). Secrets live in configs/.env or ~/.env.
+file_type_default: docx
+doc_cache_ttl_sec: 300
+event_dedup_ttl_sec: 86400
+user_memory_ttl_sec: 2592000
+state_cleanup_interval_sec: 600
+episode_summary_timeout_sec: 60
+
+concurrency:
+  event_queue_size: 200
+  event_worker_count: 8
+  max_backend_in_flight: 8
+  backend_timeout_sec: 300
+
+comment_context:
+  default_nearby_before: 1
+  default_nearby_after: 1
+  max_nearby_before: 3
+  max_nearby_after: 3
+  default_thread_history_replies: 8
+  default_thread_history_chars: 3000
+  max_thread_history_replies: 30
+  max_thread_history_chars: 8000
+  max_fetch_rounds: 4
+  max_context_chars: 12000
+  max_context_chars_total: 24000
+  enable_section: true
+  enable_document_summary: true
+  document_summary_chars: 4000
+
+failure_handling:
+  polite_reply_text: "目前在神游，稍后回来。"
+  notifier_enabled: false
+
+url_fetch:
+  enabled: true
+  timeout_sec: 8
+  max_redirects: 3
+  max_response_bytes: 204800
+  allow_private_ip: false
+  allowed_content_types:
+    - text/plain
+    - text/html
+    - application/json
+    - application/xml
+    - text/xml
+
+deerflow:
+  checkpointer:
+    type: sqlite
+    connection_string: runtime/state/checkpoints.db
