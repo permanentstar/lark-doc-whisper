@@ -18,10 +18,13 @@ from lark_oapi.api.drive.v1 import P2DriveNoticeCommentAddV1
 from ..agent.deerflow_backend import DeerFlowBackend
 from ..config import DEERFLOW_CONFIG_PATH, load_app_config, load_env
 from .singleton import SingleInstanceLock
+from .oauth_callback import OAuthCallbackApp, OAuthCallbackService
 from ..handlers.comment_handler import HandlerContext, handle_comment_event
 from ..lark.client import get_client, resolve_bot_open_id
+from ..lark.oauth import LarkOAuthClient
 from ..state.cleanup import StateCleanupService
 from ..state.paths import LOGS_DIR, ensure_dirs
+from ..state.user_doc_tokens import InMemoryUserDocTokenStore
 
 logger = logging.getLogger("lark_doc_whisper.gateway")
 
@@ -115,14 +118,23 @@ def _run_gateway(cfg, env: dict[str, str]) -> int:
         config_path=DEERFLOW_CONFIG_PATH,
         checkpointer_cfg=cfg.deerflow_checkpointer_cfg,
     )
+    user_doc_token_store = InMemoryUserDocTokenStore()
 
     ctx = HandlerContext(
         cfg=cfg,
         api_client=api_client,
         backend=backend,
         bot_open_id=bot_open_id,
+        app_id=env.get("LARK_APP_ID", ""),
+        authorization_state_secret=env.get("LARK_APP_SECRET", ""),
+        user_doc_token_store=user_doc_token_store,
     )
 
+    oauth_callback_service = _start_oauth_callback_service(
+        cfg=cfg,
+        env=env,
+        token_store=user_doc_token_store,
+    )
     worker_loop = _start_worker_loop()
     event_queue: asyncio.Queue = asyncio.Queue(maxsize=cfg.event_queue_size)
     for i in range(max(1, cfg.event_worker_count)):
@@ -133,6 +145,7 @@ def _run_gateway(cfg, env: dict[str, str]) -> int:
         doc_cache_ttl_sec=cfg.doc_cache_ttl_sec,
         event_dedup_ttl_sec=cfg.event_dedup_ttl_sec,
         user_memory_ttl_sec=cfg.user_memory_ttl_sec,
+        user_doc_token_store=user_doc_token_store,
     )
     cleanup_service.start()
 
@@ -166,6 +179,8 @@ def _run_gateway(cfg, env: dict[str, str]) -> int:
             await ws_client._disconnect()
         except Exception:
             logger.warning("graceful websocket disconnect failed", exc_info=True)
+        if oauth_callback_service is not None:
+            oauth_callback_service.stop()
         cleanup_service.stop()
         for _ in range(max(1, cfg.event_worker_count)):
             asyncio.run_coroutine_threadsafe(event_queue.put(None), worker_loop)
@@ -198,6 +213,39 @@ def _run_gateway(cfg, env: dict[str, str]) -> int:
         if "Event loop stopped before Future completed" not in str(exc):
             raise
     return 0
+
+
+def _start_oauth_callback_service(
+    *,
+    cfg,
+    env: dict[str, str],
+    token_store: InMemoryUserDocTokenStore,
+) -> OAuthCallbackService | None:
+    if not cfg.oauth_callback.enabled:
+        return None
+    auth_cfg = cfg.url_fetch.authorization
+    scopes = tuple(
+        scope.strip() for scope in auth_cfg.scopes
+        if scope.strip() and scope.strip().lower() != "offline_access"
+    )
+    if not auth_cfg.enabled or not auth_cfg.redirect_uri or not scopes:
+        raise RuntimeError("oauth_callback enabled but url_fetch.authorization is not fully configured")
+    service = OAuthCallbackService(
+        host=cfg.oauth_callback.host,
+        port=cfg.oauth_callback.port,
+        app=OAuthCallbackApp(
+            oauth_client=LarkOAuthClient(
+                app_id=env["LARK_APP_ID"],
+                app_secret=env["LARK_APP_SECRET"],
+                redirect_uri=cfg.url_fetch.authorization.redirect_uri,
+                timeout_sec=cfg.url_fetch.timeout_sec,
+            ),
+            token_store=token_store,
+            state_secret=env["LARK_APP_SECRET"],
+        ),
+    )
+    service.start()
+    return service
 
 
 if __name__ == "__main__":

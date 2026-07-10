@@ -33,7 +33,7 @@ flowchart TD
   P --> M["user memory episode<br/>异步写入"]
   H --> F["FailureEventStore · SQLite<br/>失败事件审计"]
 
-  CL["StateCleanupService · daemon<br/>周期清理 doc_cache / seen_events / user_memory"]
+  CL["StateCleanupService · daemon<br/>周期清理 doc_cache / seen_events / user_memory / user_doc_tokens"]
 ```
 
 | 层 | 角色 | 职责 |
@@ -188,7 +188,7 @@ flowchart LR
 
 - **独立后台线程**：`StateCleanupService`（[cleanup.py](../src/lark_doc_whisper/state/cleanup.py)）随 gateway 生命周期启停，`state_cleanup_interval_sec`（默认 600s）周期跑一次，文件扫描 + SQLite 删除都在线程内完成，不占用 comment event worker。选独立线程而非 `asyncio.to_thread`，因为清理是纯阻塞 I/O，独立线程比在 event loop 上协调更直接。
 - **请求路径纯净**：`is_seen()` 是纯查询（存在且在 TTL 窗口内才为 `True`，过期不删）；`mark_seen()` 是请求链**同步写入**，必须完成才算事件真正处理完，后台清理只删旧数据、不替代当前请求落库；`doc_fetcher` 只管 cache hit/miss + 覆盖写；`user_memory.search()` 按 TTL 过滤查询结果。
-- **清理规则**：`doc_cache` 遍历 `*.json`，优先读文件内 `ts`，损坏/缺失回退 `mtime`，超 `doc_cache_ttl_sec` 即 `unlink`（`FileNotFoundError` 静默跳过并发）；`seen_events` / `user_memory` 各执行 `DELETE ... WHERE <ts> < now - ttl`。
+- **清理规则**：`doc_cache` 遍历 `*.json`，优先读文件内 `ts`，损坏/缺失回退 `mtime`，超 `doc_cache_ttl_sec` 即 `unlink`（`FileNotFoundError` 静默跳过并发）；`seen_events` / `user_memory` 各执行 `DELETE ... WHERE <ts> < now - ttl`；`user_doc_tokens` 清理过期的内存用户 token。
 - **失败隔离**：单子任务失败不影响其他子任务（各自 `try/except`），本轮仍输出 summary log（删除数量 + 耗时）。
 
 运维视角的 TTL 表格与操作见 [deploy_sop.zh-CN.md](deploy_sop.zh-CN.md) §10。
@@ -203,7 +203,7 @@ flowchart LR
 flowchart TD
     ERR["主流程某阶段失败"] --> KIND{失败类型}
     KIND -->|backend.chat 超时/异常| R1["回「目前在神游，稍后回来。」<br/>failure_event(backend_chat)<br/>兜底成功则 mark_seen"]
-    KIND -->|Feishu URL 无权限| R2["回标准授权引导语<br/>failure_event(url_fetch)"]
+    KIND -->|Feishu URL 无权限| R2["回授权引导或 OAuth 链接<br/>failure_event(url_fetch)"]
     KIND -->|缺锚点无法定位| R3["回「无法定位评论原文」<br/>failure_event(comment_context)"]
     KIND -->|post_reply 失败| R4["无法保证用户感知<br/>failure_event(post_reply)<br/>不 mark_seen（留重试）"]
     KIND -->|user_memory / notifier 失败| R5["不打扰用户<br/>warning，异步处理"]
@@ -212,7 +212,7 @@ flowchart TD
 | 场景 | 用户侧 | 维护侧 | stage |
 | --- | --- | --- | --- |
 | `backend.chat` 超时/异常 | 「目前在神游，稍后回来。」 | 写 failure_event | `backend_chat` |
-| Feishu URL 无权限 | 标准授权引导语 | 写 failure_event | `url_fetch` |
+| Feishu URL 无权限 | 授权引导或 OAuth 链接 | 写 failure_event | `url_fetch` |
 | 缺锚点无法定位 | 「无法定位评论原文」 | 写 failure_event | `comment_context` |
 | `post_reply` 失败 | 无法保证感知 | 写 failure_event，**不 mark_seen** | `post_reply` |
 | user_memory / notifier 失败 | 不打扰 | warning，异步处理 | — |
@@ -235,7 +235,7 @@ flowchart TD
 
     CLS -->|feishu_docx / feishu_wiki| FP["进模型前权限预检"]
     FP -->|有权限| FOK["返回受控正文"]
-    FP -->|无权限| FNO["标准授权引导语<br/>failure_event(url_fetch)"]
+    FP -->|无权限| FNO["授权引导或 OAuth 链接<br/>failure_event(url_fetch)"]
 
     CLS -->|github.com / raw.githubusercontent.com| GH["GitHub 官方 MCP<br/>repos readonly toolset<br/>程序拦截器校验同 owner/repo"]
     CLS -->|external_http| EXT["fetch_url_content 只读沙箱"]
@@ -247,7 +247,7 @@ flowchart TD
 - **允许的能力**：读当前评论锚点相关文档内容、读当前用户近期问答摘要、读受控 Feishu URL、通过 GitHub 官方 MCP 只读仓库工具读取受控 GitHub 仓库、读受控外部 HTTP(S) 文本。
 - **禁止的能力**：执行 shell / Python / 系统命令；写文件、改配置、发起危险写操作；读服务器、运行环境、密钥、日志、宿主机信息；按用户指令「忽略前面规则」越权扩权。
 - **工具白名单**：已移除本地 `read_file`，模型不具备本地文件读取能力。
-- **Feishu 无权限标准回复语**：「我暂时没有权限访问这个链接。请先完成授权或把文档权限共享给机器人，然后重新 @我。」
+- **Feishu 链接文档无权限回复语**：默认回复会要求用户把链接文档共享给机器人。启用 `url_fetch.authorization` 与 `oauth_callback` 后，回复会包含飞书 OAuth 链接，并在 HMAC 签名的 `state` 中携带链接文档 URL、当前评论位置和提问用户 open_id。callback 校验签名 state，用一次性 code 换短期 `user_access_token`，校验授权用户身份，然后只在内存中按「同一用户 + 同一链接文档」缓存该 token。无 refresh token、无持久化、无自动刷新。
 - **GitHub 仓库链接**：`github.com/{owner}/{repo}` 以及匹配的 `raw.githubusercontent.com/{owner}/{repo}/...` 链接会路由到 `extensions_config.json` 注册的 GitHub MCP server。MCP 拦截器只允许访问当前问题或同评论线程历史中明确出现过的 `owner/repo`；generic HTTP fetch 会拒绝 GitHub URL。
 - **非文本与大文件**：二进制、图片、压缩包、超大 HTML、需登录交互的页面一律不展开，回复用户请贴关键片段或先让资源对机器人可读。
 
@@ -270,6 +270,7 @@ flowchart TD
 ```
 
 - **进程形态**：单进程长连接 WS gateway，裸机 / VM + systemd 托管。自动重启是 systemd 职责，进程内不自重启。
+- **OAuth callback**：当 `oauth_callback.enabled=true` 时，同一个 gateway 进程启动一个小型 HTTP server，直接监听 `oauth_callback.host:oauth_callback.port`，仅响应 `GET /oauth/callback`。无反向代理部署时，需要直接放行该端口，并在飞书开放平台登记 `url_fetch.authorization.redirect_uri`。
 - **单实例锁**：`SingleInstanceLock`（[singleton.py](../src/lark_doc_whisper/gateway/singleton.py)）用 `fcntl.flock` 按 `app_id + slot` 加锁，锁文件 `runtime/locks/gateway_<safe_app_id>_slot_<slot>.lock`。同 slot 重复启动直接失败；进程退出即释放（不删锁文件，避免 inode 竞态）。
 - **同机多连接 = 主动 LB**：飞书对同 app 的多条 WS 连接做事件随机分发（竞争消费者）。受控做法是用不同 `WHISPER_SLOT` 显式启多个实例；非受控的僵尸连接（多来自 `kill -9`）是收到率下降的根因。
 - **优雅关闭**：SIGTERM / SIGINT 经 `add_signal_handler` 触发，顺序为停收新事件 → 发 WS close frame（`_disconnect`）→ 停 worker loop → 停 `StateCleanupService` → 释放锁。**禁止 `kill -9`**，否则残留僵尸连接抢事件，需等飞书 server 4–6 分钟超时回收。
@@ -286,6 +287,7 @@ src/lark_doc_whisper/
 ├── thread_id.py                    # session_id = doc + user
 ├── gateway/
 │   ├── ws_gateway.py               # Loop A：单实例锁 / queue / worker / cleanup 启停
+│   ├── oauth_callback.py           # 短期 user token OAuth callback HTTP server
 │   └── singleton.py                # SingleInstanceLock（flock）
 ├── handlers/comment_handler.py     # program 编排主链路
 ├── agent/
@@ -300,11 +302,13 @@ src/lark_doc_whisper/
 ├── lark/
 │   ├── client.py                   # lark-oapi client
 │   ├── comments.py                 # 评论读取 / 回帖 / 线程历史
-│   └── doc_fetcher.py              # 文档全文抓取（含硬上限）
+│   ├── doc_fetcher.py              # 文档全文抓取（含硬上限）
+│   └── oauth.py                    # OAuth code 换 token + 用户身份校验
 └── state/
     ├── failure_events.py           # 失败事件 SQLite
     ├── seen_events.py              # 幂等去重 SQLite
     ├── user_memory.py              # 用户 episode 记忆 SQLite
+    ├── user_doc_tokens.py          # 链接文档 user_access_token 内存缓存
     ├── paths.py                    # runtime 路径约定
     └── cleanup.py                  # 统一状态清理守护线程
 ```
@@ -339,6 +343,30 @@ comment_context:
 ```
 
 `default_nearby_*` / `default_thread_history_*` 是未传工具参数时的默认窗口；`max_nearby_*` / `max_thread_history_*` 是程序侧 clamp 上限。
+
+`url_fetch.authorization` 关键项：
+
+```yaml
+url_fetch:
+  authorization:
+    enabled: false
+    authorize_base_url: https://accounts.feishu.cn/open-apis/authen/v1/authorize
+    redirect_uri: ""
+    scopes: []
+```
+
+启用并配置合法 redirect URI 与 scopes 后，无法读取的飞书链接文档会收到用户可点击的 OAuth 授权链接，而不是泛化权限提示。OAuth `state` 使用内存中的 app secret 签名，便于 callback 代码拒绝被篡改的链接、评论和用户上下文。不要配置 `offline_access`；授权链接生成时会过滤它，callback 也不会保存 refresh token。当前评论所在文档仍沿用 bot 已有文档权限；该授权分支只作用于评论中新贴的额外飞书链接。
+
+`oauth_callback` 关键项：
+
+```yaml
+oauth_callback:
+  enabled: false
+  host: 0.0.0.0
+  port: 8088
+```
+
+启用后，gateway 会在配置的 host/port 直接暴露 `GET /oauth/callback`。callback 只把短期 `user_access_token` 存在进程内存中，key 为提问用户 open_id + 链接文档 URL。gateway 重启、token 过期或读取失败后，该路径失效，下次评论会重新给授权链接。
 
 ---
 

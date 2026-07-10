@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .paths import DOC_CACHE_DIR
 from .seen_events import DEFAULT_DB_PATH as SEEN_EVENTS_DB_PATH
+from .user_doc_tokens import InMemoryUserDocTokenStore
 from .user_memory import DEFAULT_DB_PATH as USER_MEMORY_DB_PATH
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ class StateCleanupService:
         user_memory_ttl_sec: int,
         seen_events_db_path: Path = SEEN_EVENTS_DB_PATH,
         user_memory_db_path: Path = USER_MEMORY_DB_PATH,
+        user_doc_token_store: InMemoryUserDocTokenStore | None = None,
     ):
         self._interval_sec = max(1, interval_sec)
         self._doc_cache_ttl_sec = doc_cache_ttl_sec
@@ -111,6 +113,7 @@ class StateCleanupService:
         self._user_memory_ttl_sec = user_memory_ttl_sec
         self._seen_events_db_path = Path(seen_events_db_path)
         self._user_memory_db_path = Path(user_memory_db_path)
+        self._user_doc_token_store = user_doc_token_store
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -159,11 +162,16 @@ class StateCleanupService:
                 self._user_memory_db_path, self._user_memory_ttl_sec, now=now
             ),
         )
+        user_doc_tokens_deleted = self._safe(
+            "user_doc_tokens",
+            lambda: self._user_doc_token_store.prune_expired(now=now)
+            if self._user_doc_token_store is not None else 0,
+        )
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         logger.info(
             "state cleanup finished: doc_cache_deleted=%s seen_events_deleted=%s "
-            "user_memory_deleted=%s elapsed_ms=%s",
-            doc_deleted, seen_deleted, mem_deleted, elapsed_ms,
+            "user_memory_deleted=%s user_doc_tokens_deleted=%s elapsed_ms=%s",
+            doc_deleted, seen_deleted, mem_deleted, user_doc_tokens_deleted, elapsed_ms,
         )
 
     @staticmethod

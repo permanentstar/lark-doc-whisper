@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from lark_doc_whisper.agent.doc_context import DocPromptContext
-from lark_doc_whisper.config import AppConfig
+from lark_doc_whisper.config import AppConfig, UrlAuthorizationConfig, UrlFetchConfig
 from lark_doc_whisper.handlers import comment_handler
 from lark_doc_whisper.handlers.comment_handler import HandlerContext, handle_comment_event
 from lark_doc_whisper.lark.comments import CommentContext
@@ -336,6 +336,57 @@ def test_handler_replies_permission_instruction_for_unreadable_feishu_url(monkey
     assert failure_store.events[0].stage == "url_fetch"
     assert failure_store.events[0].fallback_reply_succeeded is True
     assert marks[0] == "evt_quote_ctx"
+
+
+def test_handler_replies_oauth_link_for_unreadable_feishu_url_when_configured(monkeypatch):
+    backend = _Backend()
+    failure_store = _FailureStore()
+    replies = []
+    cfg = _cfg()
+    object.__setattr__(
+        cfg,
+        "url_fetch",
+        UrlFetchConfig(
+            authorization=UrlAuthorizationConfig(
+                enabled=True,
+                redirect_uri="https://assistant.example.com/lark/oauth/callback",
+                scopes=("docx:document:readonly",),
+            )
+        ),
+    )
+    ctx = HandlerContext(
+        cfg=cfg,
+        api_client=object(),
+        backend=backend,
+        bot_open_id="ou_bot",
+        app_id="cli_test",
+        authorization_state_secret="state_secret",
+    )
+
+    monkeypatch.setattr(comment_handler.seen_events, "is_seen", lambda *_, **__: False)
+    monkeypatch.setattr(comment_handler.seen_events, "mark_seen", lambda *_, **__: None)
+    monkeypatch.setattr(
+        comment_handler,
+        "get_reply_text",
+        lambda *_, **__: "请读取 https://bytedance.sg.larkoffice.com/docx/no_perm_doc 后回答",
+    )
+    monkeypatch.setattr(comment_handler, "failure_event_store", failure_store)
+
+    def fake_post_reply(*args, **kwargs):
+        replies.append(kwargs["body_text"])
+        return "reply_permission"
+
+    monkeypatch.setattr(comment_handler, "post_reply", fake_post_reply)
+
+    _run_handler(_event(), ctx)
+
+    assert backend.calls == []
+    assert len(replies) == 1
+    assert "https://accounts.feishu.cn/open-apis/authen/v1/authorize" in replies[0]
+    assert "client_id=cli_test" in replies[0]
+    assert "仅以你的身份读取这个链接文档" in replies[0]
+    assert len(failure_store.events) == 1
+    assert failure_store.events[0].stage == "url_fetch"
 
 
 def test_handler_records_llm_distilled_episode_to_user_memory(monkeypatch):

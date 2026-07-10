@@ -10,6 +10,7 @@ import logging
 import time
 from pathlib import Path
 
+import httpx
 import lark_oapi as lark
 from lark_oapi.api.docx.v1 import RawContentDocumentRequest
 
@@ -76,4 +77,47 @@ def fetch_doc_text(
     if len(text) > MAX_DOC_TEXT_CHARS:
         text = text[:MAX_DOC_TEXT_CHARS] + "\n...[truncated]"
     _write_cache(file_token, text)
+    return text
+
+
+def fetch_doc_text_with_user_access_token(
+    access_token: str,
+    file_token: str,
+    file_type: str,
+    *,
+    timeout_sec: int = 8,
+) -> str:
+    """Return doc text with a short-lived user token, without persistent cache."""
+    if file_type != "docx":
+        raise NotImplementedError(f"doc_fetcher only supports docx, got {file_type}")
+    if not access_token:
+        return ""
+
+    try:
+        resp = httpx.get(
+            f"https://open.feishu.cn/open-apis/docx/v1/documents/{file_token}/raw_content",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=timeout_sec,
+        )
+        if resp.status_code >= 400:
+            logger.warning(
+                "user raw_content failed token=%s status=%s",
+                file_token, resp.status_code,
+            )
+            return ""
+        data = resp.json()
+    except Exception:
+        logger.warning("user raw_content request failed token=%s", file_token, exc_info=True)
+        return ""
+
+    if int(data.get("code") or 0) != 0:
+        logger.warning(
+            "user raw_content failed token=%s code=%s msg=%s",
+            file_token, data.get("code"), data.get("msg"),
+        )
+        return ""
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    text = str((payload or {}).get("content") or "")
+    if len(text) > MAX_DOC_TEXT_CHARS:
+        text = text[:MAX_DOC_TEXT_CHARS] + "\n...[truncated]"
     return text

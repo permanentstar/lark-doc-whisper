@@ -5,7 +5,9 @@ import asyncio
 import pytest
 
 from lark_doc_whisper.config import AppConfig
+from lark_doc_whisper.config import OAuthCallbackConfig, UrlAuthorizationConfig, UrlFetchConfig
 from lark_doc_whisper.gateway import ws_gateway
+from lark_doc_whisper.state.user_doc_tokens import InMemoryUserDocTokenStore
 
 
 def _cfg() -> AppConfig:
@@ -52,6 +54,29 @@ def test_run_gateway_fails_fast_when_bot_open_id_cannot_be_resolved(monkeypatch)
 
     with pytest.raises(RuntimeError, match="failed to resolve bot open_id"):
         ws_gateway._run_gateway(_cfg(), env={})
+
+
+def test_oauth_callback_service_requires_authorization_scopes():
+    cfg = _cfg()
+    object.__setattr__(cfg, "oauth_callback", OAuthCallbackConfig(enabled=True, host="127.0.0.1", port=0))
+    object.__setattr__(
+        cfg,
+        "url_fetch",
+        UrlFetchConfig(
+            authorization=UrlAuthorizationConfig(
+                enabled=True,
+                redirect_uri="http://127.0.0.1:8088/oauth/callback",
+                scopes=(),
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="oauth_callback enabled"):
+        ws_gateway._start_oauth_callback_service(
+            cfg=cfg,
+            env={"LARK_APP_ID": "cli_test", "LARK_APP_SECRET": "secret"},
+            token_store=InMemoryUserDocTokenStore(),
+        )
 
 
 def test_enqueue_event_returns_false_when_queue_full():

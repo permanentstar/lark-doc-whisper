@@ -1,13 +1,17 @@
 """Strict read-only URL fetch tool for comment Q&A."""
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import ipaddress
+import json
 import re
 import socket
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
 import lark_oapi as lark
@@ -16,9 +20,10 @@ from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
 
 from .doc_context import current_doc_context_bag
 from .github_urls import is_github_url
-from ..config import UrlFetchConfig
-from ..lark.doc_fetcher import fetch_doc_text
+from ..config import UrlAuthorizationConfig, UrlFetchConfig
+from ..lark.doc_fetcher import fetch_doc_text, fetch_doc_text_with_user_access_token
 from ..security.policy import AllowedUrl
+from ..state.user_doc_tokens import InMemoryUserDocTokenStore
 
 
 @dataclass(frozen=True)
@@ -26,6 +31,17 @@ class UrlFetchContext:
     client: lark.Client | object
     cfg: UrlFetchConfig
     allowed_urls: tuple[AllowedUrl, ...]
+    user_open_id: str = ""
+    user_doc_token_store: InMemoryUserDocTokenStore | None = None
+
+
+@dataclass(frozen=True)
+class UrlAuthorizationRequest:
+    source_file_token: str
+    source_file_type: str
+    comment_id: str
+    reply_id: str
+    user_open_id: str
 
 
 @dataclass(frozen=True)
@@ -34,6 +50,7 @@ class UrlPreflightResult:
     url: str = ""
     reason: str = ""
     reply_text: str = ""
+    authorization_url: str = ""
 
 
 current_url_fetch_context: ContextVar[UrlFetchContext | None] = ContextVar(
@@ -43,6 +60,109 @@ current_url_fetch_context: ContextVar[UrlFetchContext | None] = ContextVar(
 
 
 FEISHU_PERMISSION_REPLY_TEXT = "我暂时没有权限访问这个链接。请先完成授权或把文档权限共享给机器人，然后重新 @我。"
+
+
+def _encode_authorization_state(
+    *,
+    link_url: str,
+    link_kind: str,
+    auth_request: UrlAuthorizationRequest,
+    state_secret: str,
+) -> str:
+    payload = {
+        "action": "feishu_link_doc_authorization",
+        "created_at": int(time.time()),
+        "link_url": link_url,
+        "link_kind": link_kind,
+        "source_file_token": auth_request.source_file_token,
+        "source_file_type": auth_request.source_file_type,
+        "comment_id": auth_request.comment_id,
+        "reply_id": auth_request.reply_id,
+        "user_open_id": auth_request.user_open_id,
+    }
+    payload_raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    signature = hmac.new(
+        state_secret.encode("utf-8"),
+        payload_raw.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    envelope = {"payload": payload, "sig": signature}
+    raw = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def decode_authorization_state(state: str, state_secret: str) -> dict[str, object]:
+    """Decode and verify an OAuth state value produced by this module."""
+    try:
+        padded = state + "=" * (-len(state) % 4)
+        envelope = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except Exception as exc:
+        raise ValueError("invalid authorization state encoding") from exc
+
+    payload = envelope.get("payload")
+    signature = str(envelope.get("sig") or "")
+    if not isinstance(payload, dict) or not signature or not state_secret:
+        raise ValueError("invalid authorization state signature")
+
+    payload_raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    expected = hmac.new(
+        state_secret.encode("utf-8"),
+        payload_raw.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise ValueError("invalid authorization state signature")
+    return payload
+
+
+def _build_authorization_url(
+    *,
+    auth_cfg: UrlAuthorizationConfig,
+    app_id: str,
+    state_secret: str,
+    link_url: str,
+    link_kind: str,
+    auth_request: UrlAuthorizationRequest | None,
+) -> str:
+    scopes = tuple(
+        scope.strip() for scope in auth_cfg.scopes
+        if scope.strip() and scope.strip().lower() != "offline_access"
+    )
+    if (
+        not auth_cfg.enabled
+        or not app_id
+        or not state_secret
+        or not auth_cfg.authorize_base_url
+        or not auth_cfg.redirect_uri
+        or not scopes
+        or auth_request is None
+    ):
+        return ""
+    params = {
+        "client_id": app_id,
+        "response_type": "code",
+        "redirect_uri": auth_cfg.redirect_uri,
+        "state": _encode_authorization_state(
+            link_url=link_url,
+            link_kind=link_kind,
+            auth_request=auth_request,
+            state_secret=state_secret,
+        ),
+    }
+    params["scope"] = " ".join(scopes)
+    return f"{auth_cfg.authorize_base_url}?{urlencode(params)}"
+
+
+def _build_permission_reply_text(*, authorization_url: str) -> str:
+    if not authorization_url:
+        return FEISHU_PERMISSION_REPLY_TEXT
+    return (
+        "我可以回复当前文档，但还没有权限读取授权链接里的文档。\n"
+        f"请点击下面的飞书授权链接：{authorization_url}\n"
+        "授权后我会在 token 有效期内仅以你的身份读取这个链接文档；"
+        "服务重启、授权过期或读取失败后，需要重新授权。"
+        "完成后请重新 @我。"
+    )
 
 
 def _normalize(url: str) -> str:
@@ -122,7 +242,7 @@ def _fetch_external_text(ctx: UrlFetchContext, url: str) -> tuple[str, str]:
     return "", "too_many_redirects"
 
 
-def _fetch_feishu_text(ctx: UrlFetchContext, url: str, kind: str) -> tuple[str, str]:
+def _fetch_feishu_text_as_bot(ctx: UrlFetchContext, url: str, kind: str) -> tuple[str, str]:
     token = _normalize(urlparse(url).path.rsplit("/", 1)[-1])
     if kind == "feishu_docx":
         text = fetch_doc_text(ctx.client, token, "docx", ttl_sec=300)
@@ -139,29 +259,80 @@ def _fetch_feishu_text(ctx: UrlFetchContext, url: str, kind: str) -> tuple[str, 
     return (text, "") if text else ("", "permission_or_auth_required")
 
 
+def _fetch_feishu_text_with_user_token(ctx: UrlFetchContext, url: str, kind: str) -> tuple[str, str]:
+    if ctx.user_doc_token_store is None or not ctx.user_open_id:
+        return "", "permission_or_auth_required"
+    access_token = ctx.user_doc_token_store.get(ctx.user_open_id, url)
+    if not access_token:
+        return "", "permission_or_auth_required"
+
+    token = _normalize(urlparse(url).path.rsplit("/", 1)[-1])
+    if kind != "feishu_docx":
+        return "", f"unsupported_feishu_user_token_type:{kind}"
+
+    text = fetch_doc_text_with_user_access_token(
+        access_token,
+        token,
+        "docx",
+        timeout_sec=ctx.cfg.timeout_sec,
+    )
+    if text:
+        return text, ""
+    ctx.user_doc_token_store.delete(ctx.user_open_id, url)
+    return "", "permission_or_auth_required"
+
+
+def _fetch_feishu_text(ctx: UrlFetchContext, url: str, kind: str) -> tuple[str, str]:
+    text, error = _fetch_feishu_text_as_bot(ctx, url, kind)
+    if not error:
+        return text, ""
+    if error != "permission_or_auth_required":
+        return "", error
+    return _fetch_feishu_text_with_user_token(ctx, url, kind)
+
+
 def preflight_feishu_urls(
     *,
     client: lark.Client | object,
     cfg: UrlFetchConfig,
     allowed_urls: tuple[AllowedUrl, ...],
+    app_id: str = "",
+    state_secret: str = "",
+    auth_request: UrlAuthorizationRequest | None = None,
+    user_doc_token_store: InMemoryUserDocTokenStore | None = None,
 ) -> UrlPreflightResult:
     for candidate in allowed_urls:
         if not candidate.kind.startswith("feishu_"):
             continue
         try:
             _, error = _fetch_feishu_text(
-                UrlFetchContext(client=client, cfg=cfg, allowed_urls=allowed_urls),
+                UrlFetchContext(
+                    client=client,
+                    cfg=cfg,
+                    allowed_urls=allowed_urls,
+                    user_open_id=auth_request.user_open_id if auth_request else "",
+                    user_doc_token_store=user_doc_token_store,
+                ),
                 candidate.url,
                 candidate.kind,
             )
         except Exception:
             error = "permission_or_auth_required"
         if error == "permission_or_auth_required":
+            authorization_url = _build_authorization_url(
+                auth_cfg=cfg.authorization,
+                app_id=app_id,
+                state_secret=state_secret,
+                link_url=candidate.url,
+                link_kind=candidate.kind,
+                auth_request=auth_request,
+            )
             return UrlPreflightResult(
                 allowed=False,
                 url=candidate.url,
                 reason=error,
-                reply_text=FEISHU_PERMISSION_REPLY_TEXT,
+                reply_text=_build_permission_reply_text(authorization_url=authorization_url),
+                authorization_url=authorization_url,
             )
         if error:
             return UrlPreflightResult(

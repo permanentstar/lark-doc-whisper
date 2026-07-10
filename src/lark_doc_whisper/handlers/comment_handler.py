@@ -18,7 +18,7 @@ from .. import thread_id as tid
 from ..agent.backend import HarnessBackend
 from ..agent.doc_context import DocPromptContext
 from ..agent.episode_summarizer import summarize_episode
-from ..agent.url_fetch import UrlFetchContext, preflight_feishu_urls
+from ..agent.url_fetch import UrlAuthorizationRequest, UrlFetchContext, preflight_feishu_urls
 from ..config import AppConfig
 from ..lark.comments import (
     get_comment_context,
@@ -31,6 +31,7 @@ from ..orchestrator.comment_context import build_comment_context_provider
 from ..security.policy import AllowedUrl, evaluate_user_query, extract_allowed_urls
 from ..state import seen_events
 from ..state.failure_events import FailureEvent, default_store as failure_event_store
+from ..state.user_doc_tokens import InMemoryUserDocTokenStore
 from ..state.user_memory import default_store as user_memory_store
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,11 @@ class HandlerContext:
     backend: HarnessBackend
     # Runtime metadata resolved at startup; used for the self-trigger guard.
     bot_open_id: str
+    # Lark app_id is public and is only used to build user-facing OAuth URLs.
+    app_id: str = ""
+    # In-memory HMAC secret for OAuth state integrity; never persisted or logged.
+    authorization_state_secret: str = ""
+    user_doc_token_store: InMemoryUserDocTokenStore = None  # type: ignore[assignment]
 
     # Per-thread asyncio.Lock for serializing same-thread requests.
     _thread_locks: dict[str, asyncio.Lock] = None  # type: ignore[assignment]
@@ -63,6 +69,8 @@ class HandlerContext:
                 "_backend_semaphore",
                 asyncio.Semaphore(max(1, self.cfg.max_backend_in_flight)),
             )
+        if self.user_doc_token_store is None:
+            object.__setattr__(self, "user_doc_token_store", InMemoryUserDocTokenStore())
 
     def lock_for(self, thread_id: str) -> asyncio.Lock:
         lock = self._thread_locks.get(thread_id)
@@ -313,6 +321,16 @@ async def handle_comment_event(
         client=ctx.api_client,
         cfg=ctx.cfg.url_fetch,
         allowed_urls=allowed_urls,
+        app_id=ctx.app_id,
+        state_secret=ctx.authorization_state_secret,
+        auth_request=UrlAuthorizationRequest(
+            source_file_token=meta.file_token,
+            source_file_type=file_type,
+            comment_id=meta.comment_id,
+            reply_id=meta.reply_id or "",
+            user_open_id=meta.from_open_id,
+        ),
+        user_doc_token_store=ctx.user_doc_token_store,
     )
     if not feishu_url_preflight.allowed:
         reply_id = post_reply(
@@ -338,6 +356,8 @@ async def handle_comment_event(
         client=ctx.api_client,
         cfg=ctx.cfg.url_fetch,
         allowed_urls=allowed_urls,
+        user_open_id=meta.from_open_id,
+        user_doc_token_store=ctx.user_doc_token_store,
     )
 
     # 4. Pull the comment anchor. For anchored comments, the quote is the

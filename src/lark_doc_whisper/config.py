@@ -11,6 +11,7 @@ OpenAI, DeepSeek, a local vLLM server, etc.).
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ ENV_CANDIDATES = (
     APP_CONFIG_PATH.parent / ".env",
     Path.home() / ".env",
 )
+ENV_REF_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,14 @@ class FailureHandlingConfig:
 
 
 @dataclass(frozen=True)
+class UrlAuthorizationConfig:
+    enabled: bool = False
+    authorize_base_url: str = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+    redirect_uri: str = ""
+    scopes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class UrlFetchConfig:
     enabled: bool = True
     timeout_sec: int = 8
@@ -65,6 +75,14 @@ class UrlFetchConfig:
         "application/xml",
         "text/xml",
     )
+    authorization: UrlAuthorizationConfig = UrlAuthorizationConfig()
+
+
+@dataclass(frozen=True)
+class OAuthCallbackConfig:
+    enabled: bool = False
+    host: str = "0.0.0.0"
+    port: int = 8088
 
 
 @dataclass(frozen=True)
@@ -90,6 +108,7 @@ class AppConfig:
     comment_context: CommentContextConfig = CommentContextConfig()
     failure_handling: FailureHandlingConfig = FailureHandlingConfig()
     url_fetch: UrlFetchConfig = UrlFetchConfig()
+    oauth_callback: OAuthCallbackConfig = OAuthCallbackConfig()
     event_queue_size: int = 200
     event_worker_count: int = 8
     max_backend_in_flight: int = 8
@@ -124,16 +143,44 @@ def load_env(*, require_llm: bool = False) -> dict[str, str]:
     return _load_env(require_llm=require_llm)
 
 
+def _prime_env_from_dotenv() -> None:
+    for dotenv_path in ENV_CANDIDATES:
+        if dotenv_path.is_file():
+            load_dotenv(dotenv_path)
+            break
+
+
+def _expand_env_refs(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _expand_env_refs(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_refs(item) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    def repl(match: re.Match[str]) -> str:
+        key = match.group(1)
+        env_value = os.environ.get(key, "").strip()
+        if not env_value or env_value == "__fill_me__":
+            raise RuntimeError(f"{key} not set for config expansion")
+        return env_value
+
+    return ENV_REF_RE.sub(repl, value)
+
+
 def load_app_config() -> AppConfig:
     if not APP_CONFIG_PATH.exists():
         raise RuntimeError(f"missing app config: {APP_CONFIG_PATH}")
+    _prime_env_from_dotenv()
     with open(APP_CONFIG_PATH) as f:
-        data: dict[str, Any] = yaml.safe_load(f) or {}
+        data: dict[str, Any] = _expand_env_refs(yaml.safe_load(f) or {})
     df = data.get("deerflow") or {}
     concurrency = data.get("concurrency") or {}
     cc = data.get("comment_context") or {}
     fh = data.get("failure_handling") or {}
     uf = data.get("url_fetch") or {}
+    ufa = uf.get("authorization") or {}
+    oc = data.get("oauth_callback") or {}
     raw_cp_cfg = dict(df.get("checkpointer") or {"type": "memory"})
     # Resolve relative connection_string against repo root so it doesn't
     # depend on the cwd where the process is launched from.
@@ -185,6 +232,22 @@ def load_app_config() -> AppConfig:
                     ]
                 )
             ),
+            authorization=UrlAuthorizationConfig(
+                enabled=bool(ufa.get("enabled", False)),
+                authorize_base_url=str(
+                    ufa.get(
+                        "authorize_base_url",
+                        "https://accounts.feishu.cn/open-apis/authen/v1/authorize",
+                    )
+                ),
+                redirect_uri=str(ufa.get("redirect_uri", "")),
+                scopes=tuple(str(item) for item in (ufa.get("scopes") or [])),
+            ),
+        ),
+        oauth_callback=OAuthCallbackConfig(
+            enabled=bool(oc.get("enabled", False)),
+            host=str(oc.get("host", "0.0.0.0")),
+            port=int(oc.get("port", 8088)),
         ),
         event_queue_size=int(concurrency.get("event_queue_size", 200)),
         event_worker_count=int(concurrency.get("event_worker_count", 8)),

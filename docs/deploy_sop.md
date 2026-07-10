@@ -149,6 +149,32 @@ uv run python -m lark_doc_whisper
 Lock file: `runtime/locks/gateway_<safe_app_id>_slot_<slot>.lock` (contents: `pid` + start time).
 Process liveness is judged by the OS `flock`, released on exit; the lock file is not deleted (avoids inode races).
 
+### 5.4 Optional OAuth callback port
+
+When `oauth_callback.enabled=true`, the gateway starts a small HTTP callback
+server in the same process. Without a reverse proxy, expose the configured
+port directly and register the same URL in the Lark Open Platform redirect URL
+settings.
+
+```yaml
+oauth_callback:
+  enabled: true
+  host: 0.0.0.0
+  port: 8088
+
+url_fetch:
+  authorization:
+    enabled: true
+    redirect_uri: http://<host-or-ip>:8088/oauth/callback
+    scopes:
+      - docx:document:readonly
+```
+
+The callback only stores short-lived `user_access_token` values in memory.
+Restarting the gateway, token expiry, or a read failure requires the user to
+authorize again on the next comment. Do not add `offline_access`; refresh
+tokens are intentionally out of scope.
+
 ---
 
 ## 6. Ops iron rules

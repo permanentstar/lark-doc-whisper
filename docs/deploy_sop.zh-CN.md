@@ -149,6 +149,26 @@ uv run python -m lark_doc_whisper
 锁文件：`runtime/locks/gateway_<safe_app_id>_slot_<slot>.lock`（内容为 `pid` + 启动时间）。
 进程活性由 OS `flock` 判定，退出即释放；锁文件不删除（避免 inode 竞态）。
 
+### 5.4 可选 OAuth callback 端口
+
+当 `oauth_callback.enabled=true` 时，gateway 会在同一进程内启动一个很小的 HTTP callback server。没有反向代理时，需要直接暴露配置的端口，并在飞书开放平台重定向 URL 设置中登记同一个地址。
+
+```yaml
+oauth_callback:
+  enabled: true
+  host: 0.0.0.0
+  port: 8088
+
+url_fetch:
+  authorization:
+    enabled: true
+    redirect_uri: http://<host-or-ip>:8088/oauth/callback
+    scopes:
+      - docx:document:readonly
+```
+
+callback 只把短期 `user_access_token` 放在内存里。gateway 重启、token 过期或读取失败后，用户下次评论会重新收到授权链接。不要添加 `offline_access`；refresh token 明确不在当前范围内。
+
 ---
 
 ## 6. 运维铁律

@@ -44,6 +44,16 @@ url_fetch:
     - application/json
     - application/xml
     - text/xml
+  authorization:
+    enabled: false
+    authorize_base_url: https://accounts.feishu.cn/open-apis/authen/v1/authorize
+    redirect_uri: __fill_me__
+    scopes: []
+
+oauth_callback:
+  enabled: false
+  host: 0.0.0.0
+  port: 8088
 
 deerflow:
   checkpointer:

@@ -33,7 +33,7 @@ flowchart TD
   P --> M["user memory episode<br/>async write"]
   H --> F["FailureEventStore · SQLite<br/>failure-event audit"]
 
-  CL["StateCleanupService · daemon<br/>periodic purge of doc_cache / seen_events / user_memory"]
+  CL["StateCleanupService · daemon<br/>periodic purge of doc_cache / seen_events / user_memory / user_doc_tokens"]
 ```
 
 | Layer | Role | Responsibility |
@@ -188,7 +188,7 @@ A clean boundary: **the request path handles current semantics, background clean
 
 - **Dedicated background thread**: `StateCleanupService` ([cleanup.py](../src/lark_doc_whisper/state/cleanup.py)) starts/stops with the gateway lifecycle and runs every `state_cleanup_interval_sec` (default 600s); file scanning + SQLite deletion all happen inside the thread, without occupying comment event workers. A dedicated thread rather than `asyncio.to_thread` because cleanup is pure blocking I/O, and a separate thread is more direct than coordinating on the event loop.
 - **Pure request path**: `is_seen()` is a pure query (`True` only if it exists and is within the TTL window, no deletion of expired); `mark_seen()` is a **synchronous write** on the request path that must complete for the event to count as truly processed — background cleanup only deletes old data and never substitutes for the current request's persistence; `doc_fetcher` only handles cache hit/miss + overwrite; `user_memory.search()` filters results by TTL.
-- **Cleanup rules**: `doc_cache` iterates `*.json`, preferring the in-file `ts`, falling back to `mtime` if corrupt/missing, and `unlink`s anything past `doc_cache_ttl_sec` (`FileNotFoundError` silently skips concurrency); `seen_events` / `user_memory` each run `DELETE ... WHERE <ts> < now - ttl`.
+- **Cleanup rules**: `doc_cache` iterates `*.json`, preferring the in-file `ts`, falling back to `mtime` if corrupt/missing, and `unlink`s anything past `doc_cache_ttl_sec` (`FileNotFoundError` silently skips concurrency); `seen_events` / `user_memory` each run `DELETE ... WHERE <ts> < now - ttl`; `user_doc_tokens` prunes expired in-memory user tokens.
 - **Failure isolation**: a single subtask failing doesn't affect the others (each has its own `try/except`), and the round still emits a summary log (deletion count + duration).
 
 For the ops-side TTL table and operations, see [deploy_sop.md](deploy_sop.md) §10.
@@ -203,7 +203,7 @@ Unified principle: on main-path failure, don't expose technical exceptions to th
 flowchart TD
     ERR["a main-path stage fails"] --> KIND{failure type}
     KIND -->|backend.chat timeout/exception| R1["reply 'Away for now, back in a bit.'<br/>failure_event(backend_chat)<br/>mark_seen if fallback succeeds"]
-    KIND -->|Feishu URL no permission| R2["reply standard authorization guide<br/>failure_event(url_fetch)"]
+    KIND -->|Feishu URL no permission| R2["reply authorization guide or OAuth link<br/>failure_event(url_fetch)"]
     KIND -->|missing anchor, cannot locate| R3["reply 'cannot locate the commented text'<br/>failure_event(comment_context)"]
     KIND -->|post_reply failed| R4["cannot guarantee user awareness<br/>failure_event(post_reply)<br/>no mark_seen (leave for retry)"]
     KIND -->|user_memory / notifier failed| R5["don't bother the user<br/>warning, handled async"]
@@ -212,7 +212,7 @@ flowchart TD
 | Scenario | User side | Maintainer side | stage |
 | --- | --- | --- | --- |
 | `backend.chat` timeout/exception | "Away for now, back in a bit." | write failure_event | `backend_chat` |
-| Feishu URL no permission | standard authorization guide | write failure_event | `url_fetch` |
+| Feishu URL no permission | authorization guide or OAuth link | write failure_event | `url_fetch` |
 | missing anchor, cannot locate | "cannot locate the commented text" | write failure_event | `comment_context` |
 | `post_reply` failed | cannot guarantee awareness | write failure_event, **no mark_seen** | `post_reply` |
 | user_memory / notifier failed | don't bother | warning, handled async | — |
@@ -235,7 +235,7 @@ flowchart TD
 
     CLS -->|feishu_docx / feishu_wiki| FP["permission preflight before the model"]
     FP -->|has permission| FOK["return controlled body"]
-    FP -->|no permission| FNO["standard authorization guide<br/>failure_event(url_fetch)"]
+    FP -->|no permission| FNO["authorization guide or OAuth link<br/>failure_event(url_fetch)"]
 
     CLS -->|github.com / raw.githubusercontent.com| GH["GitHub official MCP<br/>repos readonly toolset<br/>program interceptor checks same owner/repo"]
     CLS -->|external_http| EXT["fetch_url_content read-only sandbox"]
@@ -247,7 +247,7 @@ flowchart TD
 - **Allowed capabilities**: read document content around the current comment anchor, read the current user's recent Q&A summaries, read controlled Feishu URLs, read controlled GitHub repositories via the official GitHub MCP read-only repo tools, read controlled external HTTP(S) text.
 - **Forbidden capabilities**: execute shell / Python / system commands; write files, change config, perform dangerous writes; read the server, runtime env, secrets, logs, host info; escalate privileges by following a user's "ignore the previous rules".
 - **Tool allowlist**: the local `read_file` has been removed; the model has no local file-read capability.
-- **Feishu no-permission standard reply**: "I don't have permission to access this link yet. Please complete authorization or share the doc with the bot, then @ me again."
+- **Feishu linked-doc no-permission reply**: by default the reply asks the user to share the linked doc with the bot. When `url_fetch.authorization` and `oauth_callback` are enabled, the reply contains a Feishu OAuth URL carrying the linked-doc URL, current comment location, and requester open_id in an HMAC-signed `state`. The callback verifies the signed state, exchanges the one-time code for a short-lived `user_access_token`, validates the authorizing user, and keeps that token only in memory for the same user + linked doc. There is no refresh token, no persistence, and no automatic refresh.
 - **GitHub repository links**: `github.com/{owner}/{repo}` and matching `raw.githubusercontent.com/{owner}/{repo}/...` links are routed to the GitHub MCP server registered in `extensions_config.json`. The MCP interceptor only allows calls whose `owner/repo` matches a URL explicitly present in the current question or same comment thread history; generic HTTP fetch refuses GitHub URLs.
 - **Non-text & large files**: binaries, images, archives, oversized HTML, and pages requiring login interaction are never expanded; the reply asks the user to paste the key snippet or make the resource readable by the bot first.
 
@@ -270,6 +270,7 @@ flowchart TD
 ```
 
 - **Process form**: a single-process long-lived WS gateway, managed by systemd on bare metal / VM. Auto-restart is systemd's job; the process doesn't self-restart.
+- **OAuth callback**: when `oauth_callback.enabled=true`, the same gateway process starts a small HTTP server that listens directly on `oauth_callback.host:oauth_callback.port` and serves only `GET /oauth/callback`. Deployments without a reverse proxy must expose that port and register `url_fetch.authorization.redirect_uri` in the Lark Open Platform.
 - **Single-instance lock**: `SingleInstanceLock` ([singleton.py](../src/lark_doc_whisper/gateway/singleton.py)) uses `fcntl.flock` keyed by `app_id + slot`, with lock file `runtime/locks/gateway_<safe_app_id>_slot_<slot>.lock`. Restarting on the same slot fails immediately; the lock releases on process exit (the file isn't deleted, to avoid inode races).
 - **Multiple connections on one host = active LB**: Lark randomly distributes events across multiple WS connections for the same app (competing consumers). The controlled approach is to explicitly start multiple instances with different `WHISPER_SLOT`; uncontrolled zombie connections (mostly from `kill -9`) are the root cause of delivery-rate drops.
 - **Graceful shutdown**: SIGTERM / SIGINT via `add_signal_handler`, in order: stop accepting new events → send WS close frame (`_disconnect`) → stop the worker loop → stop `StateCleanupService` → release the lock. **No `kill -9`**, otherwise a lingering zombie connection grabs events and you must wait 4–6 minutes for Lark's server timeout to reclaim it.
@@ -286,6 +287,7 @@ src/lark_doc_whisper/
 ├── thread_id.py                    # session_id = doc + user
 ├── gateway/
 │   ├── ws_gateway.py               # Loop A: single-instance lock / queue / worker / cleanup lifecycle
+│   ├── oauth_callback.py           # short-lived user-token OAuth callback HTTP server
 │   └── singleton.py                # SingleInstanceLock (flock)
 ├── handlers/comment_handler.py     # program orchestration main path
 ├── agent/
@@ -300,11 +302,13 @@ src/lark_doc_whisper/
 ├── lark/
 │   ├── client.py                   # lark-oapi client
 │   ├── comments.py                 # comment read / reply / thread history
-│   └── doc_fetcher.py              # full-document fetch (with a hard cap)
+│   ├── doc_fetcher.py              # full-document fetch (with a hard cap)
+│   └── oauth.py                    # OAuth code exchange + user identity check
 └── state/
     ├── failure_events.py           # failure events SQLite
     ├── seen_events.py              # idempotency dedup SQLite
     ├── user_memory.py              # user episode memory SQLite
+    ├── user_doc_tokens.py          # in-memory user_access_token cache for linked docs
     ├── paths.py                    # runtime path conventions
     └── cleanup.py                  # unified state-cleanup daemon thread
 ```
@@ -339,6 +343,30 @@ comment_context:
 ```
 
 `default_nearby_*` / `default_thread_history_*` are the default windows when no tool arguments are passed; `max_nearby_*` / `max_thread_history_*` are the program-side clamp upper bounds.
+
+Key `url_fetch.authorization` items:
+
+```yaml
+url_fetch:
+  authorization:
+    enabled: false
+    authorize_base_url: https://accounts.feishu.cn/open-apis/authen/v1/authorize
+    redirect_uri: ""
+    scopes: []
+```
+
+When enabled with a valid redirect URI and scopes, unreadable Feishu linked docs get a user-facing OAuth link instead of a generic permission message. The OAuth `state` is signed with the in-memory app secret so callback code can reject tampered link/comment/user context. Do not configure `offline_access`; the authorization URL builder filters it out and the callback never stores refresh tokens. The current comment document remains handled by the bot's existing document permission; this authorization branch only applies to extra Feishu links pasted in comments.
+
+Key `oauth_callback` items:
+
+```yaml
+oauth_callback:
+  enabled: false
+  host: 0.0.0.0
+  port: 8088
+```
+
+When enabled, the gateway directly exposes `GET /oauth/callback` on the configured host and port. The callback stores only the short-lived `user_access_token` in process memory, keyed by requester open_id + linked-doc URL. Gateway restart, expiry, or read failure clears the path and the next comment gets a fresh authorization link.
 
 ---
 

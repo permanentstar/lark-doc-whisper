@@ -12,6 +12,7 @@ from lark_doc_whisper.state.cleanup import (
 )
 from lark_doc_whisper.state.seen_events import SqliteSeenEventsStore
 from lark_doc_whisper.state.user_memory import SqliteUserMemoryStore
+from lark_doc_whisper.state.user_doc_tokens import InMemoryUserDocTokenStore
 
 
 def _write_doc_cache(dir_path, token: str, *, ts: float, text: str = "hello") -> None:
@@ -140,6 +141,28 @@ def test_cleanup_once_isolates_subtask_failures(tmp_path, monkeypatch, caplog):
         assert conn.execute("SELECT COUNT(*) FROM seen_events").fetchone()[0] == 0
     with mem_store._connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM user_memory_episodes").fetchone()[0] == 0
+
+
+def test_cleanup_once_prunes_expired_user_doc_tokens(tmp_path):
+    now = [1000.0]
+    token_store = InMemoryUserDocTokenStore(now=lambda: now[0], expiry_skew_sec=300)
+    token_store.put("ou_user", "https://example.com/docx/old", "old-token", expires_in=100)
+    token_store.put("ou_user", "https://example.com/docx/fresh", "fresh-token", expires_in=7200)
+    now[0] = 1200.0
+    service = StateCleanupService(
+        interval_sec=600,
+        doc_cache_ttl_sec=300,
+        event_dedup_ttl_sec=300,
+        user_memory_ttl_sec=300,
+        seen_events_db_path=tmp_path / "seen_events.db",
+        user_memory_db_path=tmp_path / "user_memory.db",
+        user_doc_token_store=token_store,
+    )
+
+    service.cleanup_once(now=now[0])
+
+    assert token_store.get("ou_user", "https://example.com/docx/old") is None
+    assert token_store.get("ou_user", "https://example.com/docx/fresh") == "fresh-token"
 
 
 def test_service_start_stop(tmp_path):
