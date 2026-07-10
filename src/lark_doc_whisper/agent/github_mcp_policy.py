@@ -12,6 +12,7 @@ from .url_fetch import current_url_fetch_context
 
 
 _READ_ONLY_TOOL_PREFIXES = ("get_", "list_", "search_")
+_READ_ONLY_TOOL_SUFFIXES = ("_read",)
 _READ_ONLY_TOOL_NAMES = {
     "repo_info",
     "repository_info",
@@ -34,7 +35,7 @@ def _tool_name_without_server_prefix(name: str, server_name: str) -> str:
 def _is_read_only_tool(name: str) -> bool:
     if name in _READ_ONLY_TOOL_NAMES:
         return True
-    return name.startswith(_READ_ONLY_TOOL_PREFIXES)
+    return name.startswith(_READ_ONLY_TOOL_PREFIXES) or name.endswith(_READ_ONLY_TOOL_SUFFIXES)
 
 
 def build_github_mcp_interceptor():

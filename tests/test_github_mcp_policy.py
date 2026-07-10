@@ -57,6 +57,44 @@ def test_github_mcp_interceptor_allows_same_repo():
     assert len(calls) == 1
 
 
+def test_github_mcp_interceptor_allows_pull_request_read_for_same_repo():
+    calls = []
+    interceptor = build_github_mcp_interceptor()
+    ctx_token = current_url_fetch_context.set(
+        UrlFetchContext(
+            client=object(),
+            cfg=UrlFetchConfig(),
+            allowed_urls=(
+                AllowedUrl(
+                    url="https://github.com/permanentstar/lark-doc-whisper/pull/42",
+                    kind="external_http",
+                ),
+            ),
+        )
+    )
+
+    async def handler(request: MCPToolCallRequest) -> CallToolResult:
+        calls.append(request)
+        return CallToolResult(content=[TextContent(type="text", text="PR#42")])
+
+    try:
+        result = _run(
+            interceptor(
+                MCPToolCallRequest(
+                    name="pull_request_read",
+                    args={"owner": "permanentstar", "repo": "lark-doc-whisper", "pullNumber": 42},
+                    server_name="github",
+                ),
+                handler,
+            )
+        )
+    finally:
+        current_url_fetch_context.reset(ctx_token)
+
+    assert _text(result) == "PR#42"
+    assert len(calls) == 1
+
+
 def test_github_mcp_interceptor_rejects_cross_repo():
     calls = []
     interceptor = build_github_mcp_interceptor()
@@ -121,6 +159,44 @@ def test_github_mcp_interceptor_rejects_write_tool_even_for_allowed_repo():
                 MCPToolCallRequest(
                     name="create_or_update_file",
                     args={"owner": "permanentstar", "repo": "lark-doc-whisper", "path": "README.md"},
+                    server_name="github",
+                ),
+                handler,
+            )
+        )
+    finally:
+        current_url_fetch_context.reset(ctx_token)
+
+    assert calls == []
+    assert "read-only" in _text(result)
+
+
+def test_github_mcp_interceptor_rejects_issue_write_even_for_allowed_repo():
+    calls = []
+    interceptor = build_github_mcp_interceptor()
+    ctx_token = current_url_fetch_context.set(
+        UrlFetchContext(
+            client=object(),
+            cfg=UrlFetchConfig(),
+            allowed_urls=(
+                AllowedUrl(
+                    url="https://github.com/permanentstar/lark-doc-whisper/issues/7",
+                    kind="external_http",
+                ),
+            ),
+        )
+    )
+
+    async def handler(request: MCPToolCallRequest) -> CallToolResult:
+        calls.append(request)
+        return CallToolResult(content=[TextContent(type="text", text="SHOULD_NOT_RUN")])
+
+    try:
+        result = _run(
+            interceptor(
+                MCPToolCallRequest(
+                    name="issue_write",
+                    args={"owner": "permanentstar", "repo": "lark-doc-whisper", "issueNumber": 7},
                     server_name="github",
                 ),
                 handler,
