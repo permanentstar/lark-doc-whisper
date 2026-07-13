@@ -55,6 +55,8 @@ Once added, `@bot` in that document's comments triggers Q&A: the bot gathers con
 
 ## 3. Sensitive-info inventory & required pre-deploy items
 
+> ⚠️ `__fill_me__` placeholders in `configs/deerflow.yaml` (`model`, `base_url`) apply to **local dev too, not just production** — if they remain unset, the very first model call raises `openai.APIConnectionError`. Fill them, or point the config at your local model endpoint, before running.
+
 ### 3.1 Required secrets (three)
 
 Secrets are **only loaded from `.env` files**; candidate paths are in `config.py`'s `ENV_CANDIDATES`:
@@ -273,6 +275,27 @@ Current baseline: **104 passed** in full.
 
 - No manual purging needed; to reset, gracefully stop the process first, then delete the corresponding `.db`.
 - Back up by copying `runtime/state/*.db` directly (SQLite WAL; copy while stopped or use `.backup`).
+
+---
+
+## 10.1 Optional plugins (off by default)
+
+Two side-effect plugins ship with the gateway. Both are **off in the OSS default**; enable them on the deployment host only when you need audit or alerting. Unknown plugin names fail fast at boot. Example activation:
+
+```yaml
+plugins:
+  - name: audit_log
+  - name: admin_notifier
+    options:
+      recipients:
+        - receive_id_type: user_id
+          receive_id: <recipient_id>
+```
+
+- `audit_log`: when enabled, records an access-log-style JSONL trail of incoming events under `runtime/logs/`. Envelope metadata only — user query bodies are not persisted.
+- `admin_notifier`: when enabled, forwards persisted failure events to the configured recipients. Reuses the gateway's existing credentials — no extra secret to configure.
+
+For plugin option schemas and field names, refer to the source under `src/lark_doc_whisper/plugins/`.
 
 ---
 

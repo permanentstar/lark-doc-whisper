@@ -55,6 +55,8 @@
 
 ## 3. 敏感信息清单与部署前必填项
 
+> ⚠️ `configs/deerflow.yaml` 里的 `__fill_me__` 占位（`model`、`base_url`）**本地开发也要填，不只是上线要求**——不改就会在首次调用模型时抛 `openai.APIConnectionError`。跑之前替换掉，或者把配置指向你本地的模型端点。
+
 ### 3.1 必需的密钥（三项）
 
 密钥**只从 `.env` 文件加载**，候选路径见 `config.py` 的 `ENV_CANDIDATES`：
@@ -267,6 +269,27 @@ uv run python -m compileall -q src  # 语法编译检查
 
 - 无需手动清库；如需重置，先优雅停进程再删对应 `.db`。
 - 备份直接拷 `runtime/state/*.db`（SQLite WAL，建议停机时拷或用 `.backup`）。
+
+---
+
+## 10.1 可选插件（默认关闭）
+
+网关内置两个副作用插件，OSS **默认全关**；只在部署机上按需激活。未知插件名启动时 fail-fast。示例激活片段：
+
+```yaml
+plugins:
+  - name: audit_log
+  - name: admin_notifier
+    options:
+      recipients:
+        - receive_id_type: user_id
+          receive_id: <recipient_id>
+```
+
+- `audit_log`：开启后，会在 `runtime/logs/` 下记录一份 access log 式的 JSONL 流水，只留信封元数据，**不落用户提问正文**。
+- `admin_notifier`：开启后，会把已落库的失败事件转发给配置的 recipient，复用网关现有凭据，无需另配 secret。
+
+字段与选项的详细 schema 见 `src/lark_doc_whisper/plugins/` 源码。
 
 ---
 

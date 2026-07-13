@@ -219,6 +219,7 @@ flowchart TD
 
 - `FailureEventStore` 用 SQLite（[failure_events.py](../src/lark_doc_whisper/state/failure_events.py)），事件可追踪、可分析、可重放。
 - `Notifier` 是一层接口，默认 `NullNotifier`，不在主链路同步发送。
+- 可选插件（[plugins/](../src/lark_doc_whisper/plugins/)）按名激活，订阅 mention / failure 钩子；投递走 fire-and-forget，主链路始终干净。
 
 ---
 
@@ -299,6 +300,10 @@ src/lark_doc_whisper/
 ├── orchestrator/comment_context.py # Context Service：Provider + BudgetGuard
 ├── security/policy.py              # 安全门 + URL 分类
 ├── notify/notifier.py              # 维护者通知接口（默认 off）
+├── plugins/                        # 按名字激活的可选副作用插件
+│   ├── base.py                     # CommentPlugin 协议 + 注册表 + fail-fast 工厂
+│   ├── audit_log.py                # 追加式 JSONL 流水（不记 user_query）
+│   └── lark_admin_notifier.py      # 通过 IM v1 messages 推送 FailureEvent 给管理员
 ├── lark/
 │   ├── client.py                   # lark-oapi client
 │   ├── comments.py                 # 评论读取 / 回帖 / 线程历史

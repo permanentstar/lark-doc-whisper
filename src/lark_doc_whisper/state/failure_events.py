@@ -5,10 +5,15 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .paths import STATE_DIR
 
 DEFAULT_DB_PATH = STATE_DIR / "failure_events.db"
+
+# Discrete failure stages the handler emits. Kept as a Literal so mypy /
+# pyright catches typos at the call site without needing a full StrEnum.
+Stage = Literal["url_fetch", "comment_context", "backend_chat", "post_reply"]
 
 
 @dataclass(frozen=True)

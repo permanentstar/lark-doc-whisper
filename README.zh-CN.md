@@ -61,6 +61,8 @@ flowchart TD
 
 ## 快速开始
 
+> ⚠️ 首次运行前（本地或生产都一样），先把仓库里所有 `__fill_me__` 占位符替换为真实值，否则模型首次调用就会 `openai.APIConnectionError`。快速自检：`grep -rn "__fill_me__" configs/ ~/.env`。
+
 ```bash
 # 1. 安装依赖（deerflow-harness 从 git 拉取，uv.lock 已入库锁定版本）
 uv sync

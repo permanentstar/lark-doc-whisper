@@ -61,6 +61,8 @@ For the full layered design, concurrency and security model, see the [architectu
 
 ## Quick start
 
+> ⚠️ Before the first run — local dev **or** production — replace every `__fill_me__` placeholder. Otherwise the first model call fails with `openai.APIConnectionError`. Sanity check: `grep -rn "__fill_me__" configs/ ~/.env`.
+
 ```bash
 # 1. Install dependencies (deerflow-harness is pulled from git; uv.lock pins versions)
 uv sync

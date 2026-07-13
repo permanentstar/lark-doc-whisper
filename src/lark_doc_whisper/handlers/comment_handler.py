@@ -28,9 +28,10 @@ from ..lark.comments import (
 )
 from ..lark.doc_fetcher import fetch_doc_text
 from ..orchestrator.comment_context import build_comment_context_provider
+from ..plugins.base import CommentPluginRegistry
 from ..security.policy import AllowedUrl, evaluate_user_query, extract_allowed_urls
 from ..state import seen_events
-from ..state.failure_events import FailureEvent, default_store as failure_event_store
+from ..state.failure_events import FailureEvent, Stage, default_store as failure_event_store
 from ..state.user_doc_tokens import InMemoryUserDocTokenStore
 from ..state.user_memory import default_store as user_memory_store
 
@@ -55,6 +56,7 @@ class HandlerContext:
     # In-memory HMAC secret for OAuth state integrity; never persisted or logged.
     authorization_state_secret: str = ""
     user_doc_token_store: InMemoryUserDocTokenStore = None  # type: ignore[assignment]
+    plugins: CommentPluginRegistry = None  # type: ignore[assignment]
 
     # Per-thread asyncio.Lock for serializing same-thread requests.
     _thread_locks: dict[str, asyncio.Lock] = None  # type: ignore[assignment]
@@ -71,6 +73,8 @@ class HandlerContext:
             )
         if self.user_doc_token_store is None:
             object.__setattr__(self, "user_doc_token_store", InMemoryUserDocTokenStore())
+        if self.plugins is None:
+            object.__setattr__(self, "plugins", CommentPluginRegistry(()))
 
     def lock_for(self, thread_id: str) -> asyncio.Lock:
         lock = self._thread_locks.get(thread_id)
@@ -181,7 +185,7 @@ def _build_failure_event(
     meta: "_EventMeta",
     *,
     session_id: str,
-    stage: str,
+    stage: Stage,
     error: BaseException,
     fallback_reply_text: str,
     fallback_reply_succeeded: bool,
@@ -202,6 +206,46 @@ def _build_failure_event(
         created_at=time.time(),
         notified_at=None,
     )
+
+
+def _record_failure(
+    ctx: HandlerContext,
+    meta: "_EventMeta",
+    *,
+    session_id: str,
+    stage: Stage,
+    error: BaseException,
+    fallback_reply_text: str,
+    fallback_reply_succeeded: bool,
+) -> FailureEvent:
+    event = _build_failure_event(
+        meta,
+        session_id=session_id,
+        stage=stage,
+        error=error,
+        fallback_reply_text=fallback_reply_text,
+        fallback_reply_succeeded=fallback_reply_succeeded,
+    )
+    failure_event_store.add_event(event)
+    ctx.plugins.dispatch_failure(event)
+    return event
+
+
+# deerflow's llm_error_handling_middleware swallows provider exceptions and
+# returns a natural-language fallback AIMessage. HarnessBackend.chat flattens
+# it to a str, so the only signal we get downstream is the message body. We
+# match on prefixes emitted by that middleware (see deerflow source
+# ``agents/middlewares/llm_error_handling_middleware.py``) — better than
+# leaking a 404 stack straight into a user's comment thread.
+_DEERFLOW_ERROR_ANSWER_PREFIXES: tuple[str, ...] = (
+    "LLM request failed:",
+    "The configured LLM provider ",
+)
+
+
+def _looks_like_backend_error(answer: str) -> bool:
+    text = (answer or "").strip()
+    return any(text.startswith(prefix) for prefix in _DEERFLOW_ERROR_ANSWER_PREFIXES)
 
 
 @dataclass
@@ -253,6 +297,9 @@ async def handle_comment_event(
     if meta is None:
         logger.warning("event payload missing notice_meta; skipping")
         return
+
+    header = getattr(event, "header", None)
+    ctx.plugins.dispatch_mention(header=header, meta=meta)
 
     logger.info(
         "event id=%s file=%s comment=%s reply=%s from=%s mentioned=%s",
@@ -338,15 +385,14 @@ async def handle_comment_event(
             at_user_open_id=meta.from_open_id,
             body_text=feishu_url_preflight.reply_text,
         )
-        failure_event_store.add_event(
-            _build_failure_event(
-                meta,
-                session_id=tid.build(meta.file_token, meta.from_open_id),
-                stage="url_fetch",
-                error=RuntimeError(f"{feishu_url_preflight.reason}: {feishu_url_preflight.url}"),
-                fallback_reply_text=feishu_url_preflight.reply_text,
-                fallback_reply_succeeded=bool(reply_id),
-            )
+        _record_failure(
+            ctx,
+            meta,
+            session_id=tid.build(meta.file_token, meta.from_open_id),
+            stage="url_fetch",
+            error=RuntimeError(f"{feishu_url_preflight.reason}: {feishu_url_preflight.url}"),
+            fallback_reply_text=feishu_url_preflight.reply_text,
+            fallback_reply_succeeded=bool(reply_id),
         )
         if meta.event_id and reply_id:
             seen_events.mark_seen(meta.event_id)
@@ -371,15 +417,14 @@ async def handle_comment_event(
             at_user_open_id=meta.from_open_id,
             body_text=COMMENT_CONTEXT_MISSING_REPLY_TEXT,
         )
-        failure_event_store.add_event(
-            _build_failure_event(
-                meta,
-                session_id=tid.build(meta.file_token, meta.from_open_id),
-                stage="comment_context",
-                error=RuntimeError("missing quote and anchor_block_id for partial comment"),
-                fallback_reply_text=COMMENT_CONTEXT_MISSING_REPLY_TEXT,
-                fallback_reply_succeeded=bool(reply_id),
-            )
+        _record_failure(
+            ctx,
+            meta,
+            session_id=tid.build(meta.file_token, meta.from_open_id),
+            stage="comment_context",
+            error=RuntimeError("missing quote and anchor_block_id for partial comment"),
+            fallback_reply_text=COMMENT_CONTEXT_MISSING_REPLY_TEXT,
+            fallback_reply_succeeded=bool(reply_id),
         )
         if meta.event_id and reply_id:
             seen_events.mark_seen(meta.event_id)
@@ -438,19 +483,41 @@ async def handle_comment_event(
                 at_user_open_id=meta.from_open_id,
                 body_text=ctx.cfg.failure_handling.polite_reply_text,
             )
-            failure_event_store.add_event(
-                _build_failure_event(
-                    meta,
-                    session_id=session_id,
-                    stage="backend_chat",
-                    error=exc,
-                    fallback_reply_text=ctx.cfg.failure_handling.polite_reply_text,
-                    fallback_reply_succeeded=bool(fallback_id),
-                )
+            _record_failure(
+                ctx,
+                meta,
+                session_id=session_id,
+                stage="backend_chat",
+                error=exc,
+                fallback_reply_text=ctx.cfg.failure_handling.polite_reply_text,
+                fallback_reply_succeeded=bool(fallback_id),
             )
             if meta.event_id and fallback_id:
                 seen_events.mark_seen(meta.event_id)
             return
+
+    if _looks_like_backend_error(answer or ""):
+        logger.warning(
+            "backend chat returned a deerflow error-fallback answer; treating as failure: %r",
+            (answer or "")[:200],
+        )
+        fallback_id = post_reply(
+            ctx.api_client, meta.file_token, file_type, meta.comment_id,
+            at_user_open_id=meta.from_open_id,
+            body_text=ctx.cfg.failure_handling.polite_reply_text,
+        )
+        _record_failure(
+            ctx,
+            meta,
+            session_id=session_id,
+            stage="backend_chat",
+            error=RuntimeError((answer or "").strip()[:500] or "deerflow error fallback"),
+            fallback_reply_text=ctx.cfg.failure_handling.polite_reply_text,
+            fallback_reply_succeeded=bool(fallback_id),
+        )
+        if meta.event_id and fallback_id:
+            seen_events.mark_seen(meta.event_id)
+        return
 
     answer = (answer or "").strip() or "(模型返回空)"
 
@@ -461,15 +528,14 @@ async def handle_comment_event(
         body_text=answer,
     )
     if not new_id:
-        failure_event_store.add_event(
-            _build_failure_event(
-                meta,
-                session_id=session_id,
-                stage="post_reply",
-                error=RuntimeError("post_reply returned no reply_id"),
-                fallback_reply_text=ctx.cfg.failure_handling.polite_reply_text,
-                fallback_reply_succeeded=False,
-            )
+        _record_failure(
+            ctx,
+            meta,
+            session_id=session_id,
+            stage="post_reply",
+            error=RuntimeError("post_reply returned no reply_id"),
+            fallback_reply_text=ctx.cfg.failure_handling.polite_reply_text,
+            fallback_reply_succeeded=False,
         )
         return
     logger.info("posted reply=%s for comment=%s", new_id, meta.comment_id)

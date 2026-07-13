@@ -219,6 +219,7 @@ flowchart TD
 
 - `FailureEventStore` uses SQLite ([failure_events.py](../src/lark_doc_whisper/state/failure_events.py)); events are traceable, analyzable, and replayable.
 - `Notifier` is just an interface, defaulting to `NullNotifier`, not sending synchronously on the main path.
+- Optional plugins ([plugins/](../src/lark_doc_whisper/plugins/)) can subscribe to mention / failure hooks; delivery runs fire-and-forget so the reply path stays clean.
 
 ---
 
@@ -299,6 +300,10 @@ src/lark_doc_whisper/
 ├── orchestrator/comment_context.py # Context Service: Provider + BudgetGuard
 ├── security/policy.py              # security gate + URL classification
 ├── notify/notifier.py              # maintainer notification interface (off by default)
+├── plugins/                        # optional side-effect plugins, activated by name
+│   ├── base.py                     # CommentPlugin protocol + registry + fail-fast factory
+│   ├── audit_log.py                # append-only JSONL trail (no user_query)
+│   └── lark_admin_notifier.py      # push FailureEvent to admins via IM v1 messages
 ├── lark/
 │   ├── client.py                   # lark-oapi client
 │   ├── comments.py                 # comment read / reply / thread history

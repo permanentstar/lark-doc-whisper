@@ -19,6 +19,8 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
+from .plugins.base import PluginSpec
+
 ROOT = Path(__file__).resolve().parents[2]
 APP_CONFIG_PATH = ROOT / "configs" / "app.yaml"
 DEERFLOW_CONFIG_PATH = ROOT / "configs" / "deerflow.yaml"
@@ -114,6 +116,7 @@ class AppConfig:
     max_backend_in_flight: int = 8
     backend_timeout_sec: int = 300
     episode_summary_timeout_sec: int = 60
+    plugins: tuple[PluginSpec, ...] = ()
 
 
 def _load_env(require_llm: bool) -> dict[str, str]:
@@ -253,4 +256,24 @@ def load_app_config() -> AppConfig:
         event_worker_count=int(concurrency.get("event_worker_count", 8)),
         max_backend_in_flight=int(concurrency.get("max_backend_in_flight", 8)),
         backend_timeout_sec=int(concurrency.get("backend_timeout_sec", 300)),
+        plugins=_parse_plugin_specs(data.get("plugins")),
     )
+
+
+def _parse_plugin_specs(raw: Any) -> tuple[PluginSpec, ...]:
+    if not raw:
+        return ()
+    if not isinstance(raw, list):
+        raise RuntimeError(f"plugins must be a list, got {type(raw).__name__}")
+    specs: list[PluginSpec] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"plugin entry must be a mapping, got {entry!r}")
+        name = str(entry.get("name", "")).strip()
+        if not name:
+            raise RuntimeError(f"plugin entry missing name: {entry!r}")
+        options = entry.get("options") or {}
+        if not isinstance(options, dict):
+            raise RuntimeError(f"plugin options must be a mapping for {name!r}")
+        specs.append(PluginSpec(name=name, options=options))
+    return tuple(specs)

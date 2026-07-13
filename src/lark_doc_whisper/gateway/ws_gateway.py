@@ -22,7 +22,9 @@ from .oauth_callback import OAuthCallbackApp, OAuthCallbackService
 from ..handlers.comment_handler import HandlerContext, handle_comment_event
 from ..lark.client import get_client, resolve_bot_open_id
 from ..lark.oauth import LarkOAuthClient
+from ..plugins.base import PluginBuildCtx, build_registry
 from ..state.cleanup import StateCleanupService
+from ..state.failure_events import default_store as failure_event_store
 from ..state.paths import LOGS_DIR, ensure_dirs
 from ..state.user_doc_tokens import InMemoryUserDocTokenStore
 
@@ -120,6 +122,16 @@ def _run_gateway(cfg, env: dict[str, str]) -> int:
     )
     user_doc_token_store = InMemoryUserDocTokenStore()
 
+    plugin_registry = build_registry(
+        cfg.plugins,
+        PluginBuildCtx(api_client=api_client, failure_store=failure_event_store),
+    )
+    if plugin_registry.plugins:
+        logger.info(
+            "activated plugins: %s",
+            ", ".join(getattr(p, "name", "?") for p in plugin_registry.plugins),
+        )
+
     ctx = HandlerContext(
         cfg=cfg,
         api_client=api_client,
@@ -128,6 +140,7 @@ def _run_gateway(cfg, env: dict[str, str]) -> int:
         app_id=env.get("LARK_APP_ID", ""),
         authorization_state_secret=env.get("LARK_APP_SECRET", ""),
         user_doc_token_store=user_doc_token_store,
+        plugins=plugin_registry,
     )
 
     oauth_callback_service = _start_oauth_callback_service(
