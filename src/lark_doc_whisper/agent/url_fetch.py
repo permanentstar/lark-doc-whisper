@@ -11,7 +11,7 @@ import socket
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import httpx
 import lark_oapi as lark
@@ -21,7 +21,12 @@ from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
 from .doc_context import current_doc_context_bag
 from .github_urls import is_github_url
 from ..config import UrlAuthorizationConfig, UrlFetchConfig
+from ..lark.bitable_fetcher import fetch_bitable_text
 from ..lark.doc_fetcher import fetch_doc_text, fetch_doc_text_with_user_access_token
+from ..lark.drive_fetcher import fetch_file_metadata_text
+from ..lark.sheets_fetcher import fetch_sheet_text
+from ..lark.slides_fetcher import fetch_slides_text
+from ..lark.whiteboard_fetcher import fetch_whiteboard_text
 from ..security.policy import AllowedUrl
 from ..state.user_doc_tokens import InMemoryUserDocTokenStore
 
@@ -60,6 +65,24 @@ current_url_fetch_context: ContextVar[UrlFetchContext | None] = ContextVar(
 
 
 FEISHU_PERMISSION_REPLY_TEXT = "我暂时没有权限访问这个链接。请先完成授权或把文档权限共享给机器人，然后重新 @我。"
+
+_UNSUPPORTED_FEISHU_KIND_LABELS: dict[str, str] = {
+    "feishu_sheets": "飞书电子表格",
+    "feishu_bitable": "飞书多维表格",
+    "feishu_docs": "旧版飞书文档",
+    "feishu_mindnote": "飞书思维笔记",
+    "feishu_slides": "飞书幻灯片",
+    "feishu_file": "飞书云盘文件",
+    "feishu_whiteboard": "飞书画板",
+}
+
+
+def _unsupported_feishu_reply(kind: str) -> str:
+    label = _UNSUPPORTED_FEISHU_KIND_LABELS.get(kind, "该飞书链接类型")
+    return (
+        f"我暂时还不支持读取{label}的内容，"
+        "可以把关键数据粘贴进评论，或换成 /docx/ 或 /wiki/ 的文档链接后再 @我。"
+    )
 
 
 def _encode_authorization_state(
@@ -169,6 +192,11 @@ def _normalize(url: str) -> str:
     return url.strip().rstrip(").,]")
 
 
+def _query_param(query: str, name: str) -> str | None:
+    values = parse_qs(query).get(name) if query else None
+    return values[0] if values else None
+
+
 def _allowed_url(ctx: UrlFetchContext, url: str) -> AllowedUrl | None:
     normalized = _normalize(url)
     for candidate in ctx.allowed_urls:
@@ -243,20 +271,62 @@ def _fetch_external_text(ctx: UrlFetchContext, url: str) -> tuple[str, str]:
 
 
 def _fetch_feishu_text_as_bot(ctx: UrlFetchContext, url: str, kind: str) -> tuple[str, str]:
-    token = _normalize(urlparse(url).path.rsplit("/", 1)[-1])
+    parsed = urlparse(url)
+    token = _normalize(parsed.path.rsplit("/", 1)[-1])
     if kind == "feishu_docx":
         text = fetch_doc_text(ctx.client, token, "docx", ttl_sec=300)
         return (text, "") if text else ("", "permission_or_auth_required")
+
+    if kind == "feishu_sheets":
+        sheet_id = _query_param(parsed.query, "sheet")
+        text = fetch_sheet_text(ctx.client, token, sheet_id=sheet_id, max_rows=200)
+        return (text, "") if text else ("", "permission_or_auth_required")
+
+    if kind == "feishu_bitable":
+        table_id = _query_param(parsed.query, "table") or _query_param(parsed.query, "table_id")
+        text = fetch_bitable_text(ctx.client, token, table_id=table_id, max_rows=200)
+        return (text, "") if text else ("", "permission_or_auth_required")
+
+    if kind == "feishu_slides":
+        text = fetch_slides_text(ctx.client, token)
+        return (text, "") if text else ("", "permission_or_auth_required")
+
+    if kind == "feishu_file":
+        text = fetch_file_metadata_text(ctx.client, token, "file")
+        return (text, "") if text else ("", "permission_or_auth_required")
+
+    if kind == "feishu_whiteboard":
+        text = fetch_whiteboard_text(ctx.client, token)
+        return (text, "") if text else ("", "permission_or_auth_required")
+
+    if kind != "feishu_wiki":
+        return "", f"unsupported_feishu_type:{kind}"
 
     req = GetNodeSpaceRequest.builder().token(token).build()
     resp = ctx.client.wiki.v2.space.get_node(req)
     if not resp.success() or not resp.data or not resp.data.node:
         return "", "permission_or_auth_required"
-    if resp.data.node.obj_type != "docx":
-        return "", f"unsupported_feishu_type:{resp.data.node.obj_type}"
-
-    text = fetch_doc_text(ctx.client, resp.data.node.obj_token, "docx", ttl_sec=300)
-    return (text, "") if text else ("", "permission_or_auth_required")
+    obj_type = str(resp.data.node.obj_type or "")
+    obj_token = str(resp.data.node.obj_token or "")
+    if obj_type == "docx":
+        text = fetch_doc_text(ctx.client, obj_token, "docx", ttl_sec=300)
+        return (text, "") if text else ("", "permission_or_auth_required")
+    if obj_type in {"sheet", "sheets"}:
+        text = fetch_sheet_text(ctx.client, obj_token, sheet_id=None, max_rows=200)
+        return (text, "") if text else ("", "permission_or_auth_required")
+    if obj_type == "bitable":
+        text = fetch_bitable_text(ctx.client, obj_token, table_id=None, max_rows=200)
+        return (text, "") if text else ("", "permission_or_auth_required")
+    if obj_type == "slides":
+        text = fetch_slides_text(ctx.client, obj_token)
+        return (text, "") if text else ("", "permission_or_auth_required")
+    if obj_type == "file":
+        text = fetch_file_metadata_text(ctx.client, obj_token, "file")
+        return (text, "") if text else ("", "permission_or_auth_required")
+    if obj_type in {"whiteboard", "board"}:
+        text = fetch_whiteboard_text(ctx.client, obj_token)
+        return (text, "") if text else ("", "permission_or_auth_required")
+    return "", f"unsupported_feishu_type:{obj_type}"
 
 
 def _fetch_feishu_text_with_user_token(ctx: UrlFetchContext, url: str, kind: str) -> tuple[str, str]:
@@ -335,6 +405,13 @@ def preflight_feishu_urls(
                 authorization_url=authorization_url,
             )
         if error:
+            if error.startswith("unsupported_feishu_type:"):
+                return UrlPreflightResult(
+                    allowed=False,
+                    url=candidate.url,
+                    reason=error,
+                    reply_text=_unsupported_feishu_reply(candidate.kind),
+                )
             return UrlPreflightResult(
                 allowed=False,
                 url=candidate.url,

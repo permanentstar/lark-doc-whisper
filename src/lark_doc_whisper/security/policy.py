@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 _URL_RE = re.compile(r"https?://[^\s<>()]+")
 _DANGEROUS_PATTERNS = [
@@ -35,12 +36,29 @@ class GateDecision:
     allowed_urls: tuple[AllowedUrl, ...]
 
 
+_FEISHU_PATH_KIND_MAP: tuple[tuple[str, str], ...] = (
+    ("/docx/", "feishu_docx"),
+    ("/wiki/", "feishu_wiki"),
+    ("/sheets/", "feishu_sheets"),
+    ("/base/", "feishu_bitable"),
+    ("/bitable/", "feishu_bitable"),
+    ("/docs/", "feishu_docs"),
+    ("/mindnotes/", "feishu_mindnote"),
+    ("/slides/", "feishu_slides"),
+    ("/file/", "feishu_file"),
+    ("/board/", "feishu_whiteboard"),
+)
+_FEISHU_HOST_MARKERS: tuple[str, ...] = (".feishu.cn", ".larkoffice.com")
+
+
 def _classify_url(url: str) -> str:
-    lowered = url.lower()
-    if ".feishu.cn/docx/" in lowered or ".larkoffice.com/docx/" in lowered:
-        return "feishu_docx"
-    if ".feishu.cn/wiki/" in lowered or ".larkoffice.com/wiki/" in lowered:
-        return "feishu_wiki"
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    if hostname.endswith(_FEISHU_HOST_MARKERS):
+        for path_prefix, kind in _FEISHU_PATH_KIND_MAP:
+            if path.startswith(path_prefix):
+                return kind
     return "external_http"
 
 
