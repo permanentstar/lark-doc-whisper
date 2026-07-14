@@ -24,6 +24,7 @@ comment_context:
   max_fetch_rounds: 4
   max_context_chars: 12000
   max_context_chars_total: 24000
+  max_url_preload_chars: 4000
   enable_section: true
   enable_document_summary: true
   document_summary_chars: 4000

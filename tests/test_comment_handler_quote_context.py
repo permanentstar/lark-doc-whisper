@@ -309,10 +309,11 @@ def test_handler_injects_readable_feishu_url_content_into_doc_context(monkeypatc
     ctx = HandlerContext(cfg=_cfg(), api_client=object(), backend=backend, bot_open_id="ou_bot")
     sheet_url = "https://bytedance.sg.larkoffice.com/sheets/sheet_token"
 
-    def _fake_sheet_fetch(client, spreadsheet_token, *, sheet_id, max_rows):
+    def _fake_sheet_fetch(client, spreadsheet_token, *, sheet_id, start_row, max_rows):
         assert spreadsheet_token == "sheet_token"
         assert sheet_id is None
-        assert max_rows == 200
+        assert start_row == 1
+        assert max_rows == 6
         return "### Sheet: Q3 容量迁移分析\n| 业务子域 | 表数 |\n| --- | --- |\n| 数据仓库 | 23 |"
 
     monkeypatch.setattr(comment_handler.seen_events, "is_seen", lambda *_, **__: False)
@@ -349,7 +350,7 @@ def test_handler_caps_preloaded_feishu_url_context(monkeypatch):
     object.__setattr__(
         cfg,
         "comment_context",
-        CommentContextConfig(max_context_chars_total=220),
+        CommentContextConfig(max_url_preload_chars=220),
     )
     ctx = HandlerContext(cfg=cfg, api_client=object(), backend=backend, bot_open_id="ou_bot")
     sheet_url = "https://bytedance.sg.larkoffice.com/sheets/sheet_token"

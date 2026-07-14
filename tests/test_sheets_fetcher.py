@@ -206,3 +206,41 @@ def test_fetch_sheet_text_caps_rows_to_max_rows():
     fetch_sheet_text(client, "ss_token", sheet_id=None, max_rows=5)
     # requested range must respect max_rows cap
     assert "sh_a!A1:B5" in recorded[1].uri
+
+
+def test_fetch_sheet_text_can_read_incremental_row_window():
+    recorded: list = []
+    client = _make_client(
+        recorded,
+        [
+            {
+                "code": 0,
+                "data": {
+                    "sheets": [
+                        {
+                            "sheet_id": "sh_a",
+                            "title": "Alpha",
+                            "grid_properties": {"row_count": 1000, "column_count": 3},
+                        }
+                    ]
+                },
+            },
+            {
+                "code": 0,
+                "data": {
+                    "valueRanges": [
+                        {
+                            "range": "sh_a!A101:C120",
+                            "values": [["r101", "v1", "x"], ["r102", "v2", "y"]],
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+
+    text = fetch_sheet_text(client, "ss_token", sheet_id=None, start_row=101, max_rows=20)
+
+    assert "当前渲染行：101-120" in text
+    assert "| r101 | v1 | x |" in text
+    assert "sh_a!A101:C120" in recorded[1].uri

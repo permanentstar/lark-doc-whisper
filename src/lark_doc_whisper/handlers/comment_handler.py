@@ -452,7 +452,7 @@ async def handle_comment_event(
         context_parts["comment_thread_history"] = thread_history
     fetched_url_context = build_fetched_url_context(
         feishu_url_preflight.fetched_contents,
-        max_chars=ctx.cfg.comment_context.max_context_chars_total,
+        max_chars=ctx.cfg.comment_context.max_url_preload_chars,
     )
     if fetched_url_context:
         # Keep freshly fetched Feishu content after historical replies so old

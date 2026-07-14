@@ -44,6 +44,7 @@ class CommentContextConfig:
     max_fetch_rounds: int = 4
     max_context_chars: int = 12_000
     max_context_chars_total: int = 24_000
+    max_url_preload_chars: int = 4_000
     enable_section: bool = True
     enable_document_summary: bool = True
     document_summary_chars: int = 4_000
@@ -210,6 +211,7 @@ def load_app_config() -> AppConfig:
             max_fetch_rounds=int(cc.get("max_fetch_rounds", 4)),
             max_context_chars=int(cc.get("max_context_chars", 12_000)),
             max_context_chars_total=int(cc.get("max_context_chars_total", 24_000)),
+            max_url_preload_chars=int(cc.get("max_url_preload_chars", 4_000)),
             enable_section=bool(cc.get("enable_section", True)),
             enable_document_summary=bool(cc.get("enable_document_summary", True)),
             document_summary_chars=int(cc.get("document_summary_chars", 4_000)),

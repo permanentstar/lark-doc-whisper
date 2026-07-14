@@ -84,6 +84,10 @@ _UNSUPPORTED_FEISHU_KIND_LABELS: dict[str, str] = {
     "feishu_whiteboard": "飞书画板",
 }
 
+_FEISHU_PREVIEW_ROWS = 6
+_FEISHU_TOOL_DEFAULT_ROWS = 50
+_FEISHU_TOOL_MAX_ROWS = 50
+
 
 def _unsupported_feishu_reply(kind: str) -> str:
     label = _UNSUPPORTED_FEISHU_KIND_LABELS.get(kind, "该飞书链接类型")
@@ -308,7 +312,22 @@ def _fetch_external_text(ctx: UrlFetchContext, url: str) -> tuple[str, str]:
     return "", "too_many_redirects"
 
 
-def _fetch_feishu_text_as_bot(ctx: UrlFetchContext, url: str, kind: str) -> tuple[str, str]:
+def _row_count(value: int | None, *, default: int) -> int:
+    if value is None:
+        return default
+    return max(1, min(int(value), _FEISHU_TOOL_MAX_ROWS))
+
+
+def _fetch_feishu_text_as_bot(
+    ctx: UrlFetchContext,
+    url: str,
+    kind: str,
+    *,
+    sheet_id_override: str | None = None,
+    table_id_override: str | None = None,
+    start_row: int = 1,
+    max_rows: int = _FEISHU_TOOL_DEFAULT_ROWS,
+) -> tuple[str, str]:
     parsed = urlparse(url)
     token = _normalize(parsed.path.rsplit("/", 1)[-1])
     if kind == "feishu_docx":
@@ -316,13 +335,19 @@ def _fetch_feishu_text_as_bot(ctx: UrlFetchContext, url: str, kind: str) -> tupl
         return (text, "") if text else ("", "permission_or_auth_required")
 
     if kind == "feishu_sheets":
-        sheet_id = _query_param(parsed.query, "sheet")
-        text = fetch_sheet_text(ctx.client, token, sheet_id=sheet_id, max_rows=200)
+        sheet_id = sheet_id_override or _query_param(parsed.query, "sheet")
+        text = fetch_sheet_text(
+            ctx.client,
+            token,
+            sheet_id=sheet_id,
+            start_row=max(1, int(start_row or 1)),
+            max_rows=max_rows,
+        )
         return (text, "") if text else ("", "permission_or_auth_required")
 
     if kind == "feishu_bitable":
-        table_id = _query_param(parsed.query, "table") or _query_param(parsed.query, "table_id")
-        text = fetch_bitable_text(ctx.client, token, table_id=table_id, max_rows=200)
+        table_id = table_id_override or _query_param(parsed.query, "table") or _query_param(parsed.query, "table_id")
+        text = fetch_bitable_text(ctx.client, token, table_id=table_id, max_rows=max_rows)
         return (text, "") if text else ("", "permission_or_auth_required")
 
     if kind == "feishu_file":
@@ -346,10 +371,16 @@ def _fetch_feishu_text_as_bot(ctx: UrlFetchContext, url: str, kind: str) -> tupl
         text = fetch_doc_text(ctx.client, obj_token, "docx", ttl_sec=300)
         return (text, "") if text else ("", "permission_or_auth_required")
     if obj_type in {"sheet", "sheets"}:
-        text = fetch_sheet_text(ctx.client, obj_token, sheet_id=None, max_rows=200)
+        text = fetch_sheet_text(
+            ctx.client,
+            obj_token,
+            sheet_id=sheet_id_override,
+            start_row=max(1, int(start_row or 1)),
+            max_rows=max_rows,
+        )
         return (text, "") if text else ("", "permission_or_auth_required")
     if obj_type == "bitable":
-        text = fetch_bitable_text(ctx.client, obj_token, table_id=None, max_rows=200)
+        text = fetch_bitable_text(ctx.client, obj_token, table_id=table_id_override, max_rows=max_rows)
         return (text, "") if text else ("", "permission_or_auth_required")
     if obj_type == "slides":
         return "", "unsupported_feishu_type:feishu_slides"
@@ -385,8 +416,25 @@ def _fetch_feishu_text_with_user_token(ctx: UrlFetchContext, url: str, kind: str
     return "", "permission_or_auth_required"
 
 
-def _fetch_feishu_text(ctx: UrlFetchContext, url: str, kind: str) -> tuple[str, str]:
-    text, error = _fetch_feishu_text_as_bot(ctx, url, kind)
+def _fetch_feishu_text(
+    ctx: UrlFetchContext,
+    url: str,
+    kind: str,
+    *,
+    sheet_id: str | None = None,
+    table_id: str | None = None,
+    start_row: int = 1,
+    max_rows: int = _FEISHU_TOOL_DEFAULT_ROWS,
+) -> tuple[str, str]:
+    text, error = _fetch_feishu_text_as_bot(
+        ctx,
+        url,
+        kind,
+        sheet_id_override=sheet_id or None,
+        table_id_override=table_id or None,
+        start_row=start_row,
+        max_rows=max_rows,
+    )
     if not error:
         return text, ""
     if error != "permission_or_auth_required":
@@ -419,6 +467,8 @@ def preflight_feishu_urls(
                 ),
                 candidate.url,
                 candidate.kind,
+                start_row=1,
+                max_rows=_FEISHU_PREVIEW_ROWS,
             )
         except Exception:
             error = "permission_or_auth_required"
@@ -467,8 +517,20 @@ def preflight_feishu_urls(
 
 
 @tool("fetch_url_content")
-def fetch_url_content_tool(url: str, reason: str = "") -> str:
-    """Attach content from an approved read-only URL for this comment request."""
+def fetch_url_content_tool(
+    url: str,
+    reason: str = "",
+    sheet_id: str = "",
+    table_id: str = "",
+    start_row: int = 1,
+    row_count: int = _FEISHU_TOOL_DEFAULT_ROWS,
+) -> str:
+    """Attach content from an approved read-only URL for this comment request.
+
+    For Feishu Sheets, read incrementally: use ``start_row`` and ``row_count``
+    to request a small window. ``row_count`` is capped by program policy.
+    For Feishu Bitable/Base, use ``table_id`` when the target table is known.
+    """
     ctx = current_url_fetch_context.get()
     if ctx is None or not ctx.cfg.enabled:
         return "[url content unavailable: no active url fetch context]"
@@ -478,7 +540,15 @@ def fetch_url_content_tool(url: str, reason: str = "") -> str:
         return f"[url content unavailable: url={url}, reason=not allowed]"
 
     if candidate.kind.startswith("feishu_"):
-        content, error = _fetch_feishu_text(ctx, candidate.url, candidate.kind)
+        content, error = _fetch_feishu_text(
+            ctx,
+            candidate.url,
+            candidate.kind,
+            sheet_id=sheet_id.strip() or None,
+            table_id=table_id.strip() or None,
+            start_row=max(1, int(start_row or 1)),
+            max_rows=_row_count(row_count, default=_FEISHU_TOOL_DEFAULT_ROWS),
+        )
     elif is_github_url(candidate.url):
         return f"[url content unavailable: url={candidate.url}, reason=GitHub URL must use GitHub MCP]"
     else:

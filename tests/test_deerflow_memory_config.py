@@ -57,6 +57,8 @@ def test_app_config_has_failure_and_url_fetch_defaults():
     assert app_config.comment_context.default_thread_history_chars == 3_000
     assert app_config.comment_context.max_thread_history_replies == 30
     assert app_config.comment_context.max_thread_history_chars == 8_000
+    assert app_config.comment_context.max_url_preload_chars == 4_000
+    assert app_config.comment_context.max_url_preload_chars < app_config.comment_context.max_context_chars_total
 
 
 def test_deerflow_config_path_is_repo_convention_not_app_setting():

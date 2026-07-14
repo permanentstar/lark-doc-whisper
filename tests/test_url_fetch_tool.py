@@ -155,8 +155,13 @@ def test_fetch_url_content_resolves_feishu_wiki_to_sheet(monkeypatch):
     )
     calls: list = []
 
-    def _fake_sheet_fetch(client, spreadsheet_token, *, sheet_id, max_rows):
-        calls.append({"token": spreadsheet_token, "sheet_id": sheet_id, "max_rows": max_rows})
+    def _fake_sheet_fetch(client, spreadsheet_token, *, sheet_id, start_row, max_rows):
+        calls.append({
+            "token": spreadsheet_token,
+            "sheet_id": sheet_id,
+            "start_row": start_row,
+            "max_rows": max_rows,
+        })
         return "### Sheet\n| a |\n| --- |\n| 1 |"
 
     bag_token = current_doc_context_bag.set({})
@@ -172,7 +177,7 @@ def test_fetch_url_content_resolves_feishu_wiki_to_sheet(monkeypatch):
         result = fetch_url_content_tool.invoke({"url": "https://bytedance.sg.larkoffice.com/wiki/wiki_token", "reason": "read"})
         assert "url content attached" in result
         assert "### Sheet" in current_doc_context_bag.get()["url_content"]
-        assert calls == [{"token": "sheet_token", "sheet_id": None, "max_rows": 200}]
+        assert calls == [{"token": "sheet_token", "sheet_id": None, "start_row": 1, "max_rows": 50}]
     finally:
         current_url_fetch_context.reset(ctx_token)
         current_doc_context_bag.reset(bag_token)
@@ -210,7 +215,7 @@ def test_fetch_url_content_resolves_feishu_wiki_to_bitable(monkeypatch):
         result = fetch_url_content_tool.invoke({"url": "https://bytedance.sg.larkoffice.com/wiki/wiki_token", "reason": "read"})
         assert "url content attached" in result
         assert "### Base" in current_doc_context_bag.get()["url_content"]
-        assert calls == [{"token": "app_token", "table_id": None, "max_rows": 200}]
+        assert calls == [{"token": "app_token", "table_id": None, "max_rows": 50}]
     finally:
         current_url_fetch_context.reset(ctx_token)
         current_doc_context_bag.reset(bag_token)
@@ -231,13 +236,14 @@ def test_preflight_feishu_urls_reports_permission_required(monkeypatch):
     assert "没有权限访问这个链接" in result.reply_text
 
 
-def test_preflight_feishu_urls_keeps_readable_sheet_content(monkeypatch):
+def test_preflight_feishu_urls_keeps_only_readable_sheet_preview(monkeypatch):
     url = "https://bytedance.sg.larkoffice.com/sheets/sheet_token"
 
-    def _fake_sheet_fetch(client, spreadsheet_token, *, sheet_id, max_rows):
+    def _fake_sheet_fetch(client, spreadsheet_token, *, sheet_id, start_row, max_rows):
         assert spreadsheet_token == "sheet_token"
         assert sheet_id is None
-        assert max_rows == 200
+        assert start_row == 1
+        assert max_rows == 6
         return "### Sheet: Q3\n| 业务子域 | 表数 |\n| --- | --- |\n| 数据仓库 | 23 |"
 
     monkeypatch.setattr("lark_doc_whisper.agent.url_fetch.fetch_sheet_text", _fake_sheet_fetch)
@@ -507,8 +513,13 @@ def test_fetch_url_content_reads_feishu_sheets_via_sheet_fetcher(monkeypatch):
     url = "https://bytedance.sg.larkoffice.com/sheets/ss_tok?sheet=sh_b"
     calls: list = []
 
-    def _fake_fetch(client, spreadsheet_token, *, sheet_id, max_rows):
-        calls.append({"token": spreadsheet_token, "sheet_id": sheet_id, "max_rows": max_rows})
+    def _fake_fetch(client, spreadsheet_token, *, sheet_id, start_row, max_rows):
+        calls.append({
+            "token": spreadsheet_token,
+            "sheet_id": sheet_id,
+            "start_row": start_row,
+            "max_rows": max_rows,
+        })
         return "### Beta\n| col1 | col2 |\n| --- | --- |\n| v1 | v2 |"
 
     monkeypatch.setattr("lark_doc_whisper.agent.url_fetch.fetch_sheet_text", _fake_fetch)
@@ -522,10 +533,15 @@ def test_fetch_url_content_reads_feishu_sheets_via_sheet_fetcher(monkeypatch):
         )
     )
     try:
-        result = fetch_url_content_tool.invoke({"url": url, "reason": "read"})
+        result = fetch_url_content_tool.invoke({
+            "url": url,
+            "reason": "read",
+            "start_row": 101,
+            "row_count": 20,
+        })
         assert "url content attached" in result
         assert "v1" in current_doc_context_bag.get()["url_content"]
-        assert calls == [{"token": "ss_tok", "sheet_id": "sh_b", "max_rows": 200}]
+        assert calls == [{"token": "ss_tok", "sheet_id": "sh_b", "start_row": 101, "max_rows": 20}]
     finally:
         current_url_fetch_context.reset(ctx_token)
         current_doc_context_bag.reset(bag_token)
@@ -584,7 +600,7 @@ def test_fetch_url_content_reads_feishu_bitable_via_bitable_fetcher(monkeypatch)
         result = fetch_url_content_tool.invoke({"url": url, "reason": "read"})
         assert "url content attached" in result
         assert "v1" in current_doc_context_bag.get()["url_content"]
-        assert calls == [{"token": "app_tok", "table_id": "tbl_b", "max_rows": 200}]
+        assert calls == [{"token": "app_tok", "table_id": "tbl_b", "max_rows": 50}]
     finally:
         current_url_fetch_context.reset(ctx_token)
         current_doc_context_bag.reset(bag_token)

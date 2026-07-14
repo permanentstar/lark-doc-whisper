@@ -105,13 +105,15 @@ def fetch_sheet_text(
     spreadsheet_token: str,
     *,
     sheet_id: str | None,
+    start_row: int = 1,
     max_rows: int = MAX_ROWS_PER_SHEET,
 ) -> str:
     """Return a compact markdown snapshot of the target sheet.
 
     - Lists all sheets in the spreadsheet as a header summary.
     - Renders one sheet's cells: the ``sheet_id`` if given, else the first.
-    - Row / column counts are clipped by ``max_rows`` and ``MAX_COLS_PER_SHEET``.
+    - Row / column counts are clipped by ``start_row``, ``max_rows`` and
+      ``MAX_COLS_PER_SHEET``.
     - Returns "" on failure so the caller can fall back to a friendlier reply.
     """
     listing = _request_json(
@@ -138,10 +140,14 @@ def fetch_sheet_text(
     if row_count <= 0 or col_count <= 0:
         row_count, col_count = 1, 1
 
-    row_cap = max(1, min(int(max_rows), row_count))
+    safe_start_row = max(1, int(start_row or 1))
+    if safe_start_row > row_count:
+        safe_start_row = row_count
+    row_cap = max(1, min(int(max_rows), row_count - safe_start_row + 1))
+    end_row = safe_start_row + row_cap - 1
     col_cap = max(1, min(MAX_COLS_PER_SHEET, col_count))
     target_id = str(target.get("sheet_id") or "")
-    a1 = f"{target_id}!A1:{_col_letter(col_cap)}{row_cap}"
+    a1 = f"{target_id}!A{safe_start_row}:{_col_letter(col_cap)}{end_row}"
 
     values_payload = _request_json(
         client,
@@ -163,6 +169,7 @@ def fetch_sheet_text(
     ]
     summary_lines = [
         f"飞书电子表格：共 {len(sheets)} 个 sheet；当前渲染：{target.get('title') or target_id}",
+        f"当前渲染行：{safe_start_row}-{end_row}；总行数约 {row_count}，总列数约 {col_count}",
     ]
     if other:
         summary_lines.append("其他 sheet：")
