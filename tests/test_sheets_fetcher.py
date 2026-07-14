@@ -127,6 +127,47 @@ def test_fetch_sheet_text_selects_sheet_by_id_when_given():
     assert "| col1 | col2 |" in text
 
 
+def test_fetch_sheet_text_trims_trailing_empty_columns():
+    recorded: list = []
+    client = _make_client(
+        recorded,
+        [
+            {
+                "code": 0,
+                "data": {
+                    "sheets": [
+                        {
+                            "sheet_id": "sh_a",
+                            "title": "Alpha",
+                            "grid_properties": {"row_count": 2, "column_count": 6},
+                        }
+                    ]
+                },
+            },
+            {
+                "code": 0,
+                "data": {
+                    "valueRanges": [
+                        {
+                            "range": "sh_a!A1:F2",
+                            "values": [
+                                ["名称", "数量", "", None, "", ""],
+                                ["苹果", 12, "", None, "", ""],
+                            ],
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+
+    text = fetch_sheet_text(client, "ss_token", sheet_id=None, max_rows=10)
+
+    assert "| 名称 | 数量 |" in text
+    assert "| 苹果 | 12 |" in text
+    assert "| 名称 | 数量 |  |" not in text
+
+
 def test_fetch_sheet_text_returns_empty_when_query_fails():
     recorded: list = []
     client = _make_client(

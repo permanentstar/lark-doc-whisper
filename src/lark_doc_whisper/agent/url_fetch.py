@@ -218,7 +218,20 @@ def _build_url_receipt(*, url: str, context_text: str) -> str:
     return f"[url content attached: url={url}, chars={len(context_text)}, sha256={digest}]"
 
 
-def build_fetched_url_context(contents: tuple[FetchedUrlContent, ...]) -> str:
+def _truncate_context(text: str, max_chars: int | None) -> str:
+    if max_chars is None or max_chars <= 0 or len(text) <= max_chars:
+        return text
+    marker = "\n...[truncated]"
+    if max_chars <= len(marker):
+        return text[:max_chars]
+    return text[: max_chars - len(marker)] + marker
+
+
+def build_fetched_url_context(
+    contents: tuple[FetchedUrlContent, ...],
+    *,
+    max_chars: int | None = None,
+) -> str:
     lines: list[str] = []
     for item in contents:
         if not item.text:
@@ -232,7 +245,7 @@ def build_fetched_url_context(contents: tuple[FetchedUrlContent, ...]) -> str:
                 "</url-content>",
             ]
         )
-    return "\n".join(lines)
+    return _truncate_context("\n".join(lines), max_chars)
 
 
 def _reject_private_host(url: str, *, allow_private_ip: bool) -> str:

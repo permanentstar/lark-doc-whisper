@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from lark_doc_whisper.agent.doc_context import DocPromptContext
-from lark_doc_whisper.config import AppConfig, UrlAuthorizationConfig, UrlFetchConfig
+from lark_doc_whisper.config import AppConfig, CommentContextConfig, UrlAuthorizationConfig, UrlFetchConfig
 from lark_doc_whisper.handlers import comment_handler
 from lark_doc_whisper.handlers.comment_handler import HandlerContext, handle_comment_event
 from lark_doc_whisper.lark.comments import CommentContext
@@ -341,6 +341,40 @@ def test_handler_injects_readable_feishu_url_content_into_doc_context(monkeypatc
     assert "source=\"lark_bot_openapi\"" in doc_context.contexts["url_content"]
     assert "数据仓库" in doc_context.contexts["url_content"]
     assert list(doc_context.contexts) == ["comment_thread_history", "url_content"]
+
+
+def test_handler_caps_preloaded_feishu_url_context(monkeypatch):
+    backend = _Backend()
+    cfg = _cfg()
+    object.__setattr__(
+        cfg,
+        "comment_context",
+        CommentContextConfig(max_context_chars_total=220),
+    )
+    ctx = HandlerContext(cfg=cfg, api_client=object(), backend=backend, bot_open_id="ou_bot")
+    sheet_url = "https://bytedance.sg.larkoffice.com/sheets/sheet_token"
+
+    monkeypatch.setattr(comment_handler.seen_events, "is_seen", lambda *_, **__: False)
+    monkeypatch.setattr(comment_handler.seen_events, "mark_seen", lambda *_, **__: None)
+    monkeypatch.setattr(comment_handler, "get_reply_text", lambda *_, **__: f"请读 {sheet_url}")
+    monkeypatch.setattr(
+        comment_handler,
+        "get_comment_context",
+        lambda *_, **__: CommentContext(quote="103", is_whole=False, anchor_block_id="blk_anchor"),
+    )
+    monkeypatch.setattr(comment_handler, "fetch_doc_text", lambda *_, **__: "")
+    monkeypatch.setattr(
+        "lark_doc_whisper.agent.url_fetch.fetch_sheet_text",
+        lambda *_, **__: "### Sheet\n" + ("x" * 1000),
+    )
+    monkeypatch.setattr(comment_handler, "post_reply", lambda *_, **__: "reply_1")
+
+    _run_handler(_event(), ctx)
+
+    doc_context = backend.calls[0][2]
+    assert isinstance(doc_context, DocPromptContext)
+    assert len(doc_context.contexts["url_content"]) <= 220
+    assert "...[truncated]" in doc_context.contexts["url_content"]
 
 
 def test_handler_replies_permission_instruction_for_unreadable_feishu_url(monkeypatch):

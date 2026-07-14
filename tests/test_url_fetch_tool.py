@@ -9,8 +9,10 @@ import pytest
 
 from lark_doc_whisper.agent.doc_context import current_doc_context_bag
 from lark_doc_whisper.agent.url_fetch import (
+    FetchedUrlContent,
     UrlAuthorizationRequest,
     UrlFetchContext,
+    build_fetched_url_context,
     current_url_fetch_context,
     decode_authorization_state,
     fetch_url_content_tool,
@@ -88,6 +90,23 @@ def test_fetch_url_content_rejects_github_url_even_when_approved(monkeypatch):
     finally:
         current_url_fetch_context.reset(ctx_token)
         current_doc_context_bag.reset(bag_token)
+
+
+def test_build_fetched_url_context_applies_char_budget():
+    context = build_fetched_url_context(
+        (
+            FetchedUrlContent(
+                url="https://bytedance.sg.larkoffice.com/sheets/sheet_token",
+                kind="feishu_sheets",
+                text="x" * 500,
+            ),
+        ),
+        max_chars=160,
+    )
+
+    assert len(context) <= 160
+    assert context.startswith("<url-content")
+    assert "...[truncated]" in context
 
 
 def test_fetch_url_content_resolves_feishu_wiki_to_docx(monkeypatch):

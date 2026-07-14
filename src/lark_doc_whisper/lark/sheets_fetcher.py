@@ -68,7 +68,25 @@ def _render_row(cells: list[Any]) -> str:
     return "| " + " | ".join(_cell(v) for v in cells) + " |"
 
 
+def _is_empty_cell(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _trim_trailing_empty_columns(values: list[list[Any]]) -> list[list[Any]]:
+    if not values:
+        return values
+    max_cols = max(len(row) for row in values)
+    last_non_empty = -1
+    for col_idx in range(max_cols):
+        if any(col_idx < len(row) and not _is_empty_cell(row[col_idx]) for row in values):
+            last_non_empty = col_idx
+    if last_non_empty < 0:
+        return []
+    return [list(row[: last_non_empty + 1]) for row in values]
+
+
 def _render_markdown(sheet_title: str, values: list[list[Any]]) -> str:
+    values = _trim_trailing_empty_columns(values)
     if not values:
         return f"### {sheet_title}\n(空)"
     header = values[0]
