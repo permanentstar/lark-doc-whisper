@@ -1,0 +1,27 @@
+# logrotate template for lark-doc-whisper runtime logs.
+#
+# Install:
+#   1. Replace <REPO_DIR> with the absolute path of your checkout.
+#   2. sudo cp deploy/lark-doc-whisper.logrotate /etc/logrotate.d/lark-doc-whisper
+#   3. sudo logrotate -d /etc/logrotate.d/lark-doc-whisper
+#   4. sudo logrotate -f /etc/logrotate.d/lark-doc-whisper
+#
+# Policy:
+#   - daily rotation
+#   - keep 7 archives
+#   - rotate early once a file reaches 50 MiB
+#   - gzip old archives
+#   - copytruncate because the gateway and audit plugin keep appending to the
+#     same file path without an explicit log-file reopen hook
+
+<REPO_DIR>/runtime/logs/gateway.log
+<REPO_DIR>/runtime/logs/audit.jsonl {
+    daily
+    rotate 7
+    maxsize 50M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

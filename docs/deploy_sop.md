@@ -241,6 +241,20 @@ Current baseline: **104 passed** in full.
 | `runtime/state/doc_cache/` | full-document cache |
 | `runtime/locks/` | single-instance lock files |
 
+### 9.1.1 Log rotation
+
+The repo ships a `logrotate` template at [`deploy/lark-doc-whisper.logrotate`](../deploy/lark-doc-whisper.logrotate).
+Default policy: `daily`, `rotate 7`, `maxsize 50M`, `compress`, `delaycompress`, `copytruncate`.
+It covers both `runtime/logs/gateway.log` and `runtime/logs/audit.jsonl`; if the `audit_log` plugin is disabled, `missingok` lets rotation continue quietly.
+
+```bash
+sudo cp deploy/lark-doc-whisper.logrotate /etc/logrotate.d/lark-doc-whisper
+sudo $EDITOR /etc/logrotate.d/lark-doc-whisper   # replace <REPO_DIR>
+sudo logrotate -d /etc/logrotate.d/lark-doc-whisper
+sudo logrotate -f /etc/logrotate.d/lark-doc-whisper
+ls -lh runtime/logs
+```
+
 ### 9.2 Single-instance lock conflict
 
 **Symptom**: startup reports `another gateway instance holds ...`.

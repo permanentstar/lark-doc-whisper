@@ -235,6 +235,20 @@ uv run python -m compileall -q src  # 语法编译检查
 | `runtime/state/doc_cache/` | 文档全文缓存 |
 | `runtime/locks/` | 单实例锁文件 |
 
+### 9.1.1 日志滚动
+
+仓库内提供了 `logrotate` 模板：[`deploy/lark-doc-whisper.logrotate`](../deploy/lark-doc-whisper.logrotate)。
+默认策略：`daily`、`rotate 7`、`maxsize 50M`、`compress`、`delaycompress`、`copytruncate`。
+覆盖 `runtime/logs/gateway.log` 与 `runtime/logs/audit.jsonl`；若 `audit_log` 插件未开启，`missingok` 会直接跳过。
+
+```bash
+sudo cp deploy/lark-doc-whisper.logrotate /etc/logrotate.d/lark-doc-whisper
+sudo $EDITOR /etc/logrotate.d/lark-doc-whisper   # 替换 <REPO_DIR>
+sudo logrotate -d /etc/logrotate.d/lark-doc-whisper
+sudo logrotate -f /etc/logrotate.d/lark-doc-whisper
+ls -lh runtime/logs
+```
+
 ### 9.2 单实例锁冲突
 
 **症状**：启动即报 `another gateway instance holds ...`。
