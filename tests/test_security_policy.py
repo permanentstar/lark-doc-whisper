@@ -35,6 +35,18 @@ def test_policy_classifies_feishu_sheets_and_bitable():
     ]
 
 
+def test_policy_stops_url_before_following_chinese_text():
+    result = evaluate_user_query(
+        "从 https://bytedance.sg.larkoffice.com/sheets/KXrUssc3phbcJStV4HolJ3DWgid里看 103 个表"
+    )
+
+    assert result.blocked is False
+    assert [item.url for item in result.allowed_urls] == [
+        "https://bytedance.sg.larkoffice.com/sheets/KXrUssc3phbcJStV4HolJ3DWgid"
+    ]
+    assert [item.kind for item in result.allowed_urls] == ["feishu_sheets"]
+
+
 def test_policy_classifies_all_supported_feishu_paths():
     result = evaluate_user_query(
         " ".join(

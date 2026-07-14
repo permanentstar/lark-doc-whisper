@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-_URL_RE = re.compile(r"https?://[^\s<>()]+")
+_URL_RE = re.compile(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+")
 _DANGEROUS_PATTERNS = [
     re.compile(r"忽略前面规则"),
     re.compile(r"ignore\s+previous", re.IGNORECASE),

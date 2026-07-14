@@ -10,6 +10,7 @@ from lark_doc_whisper.lark.comments import (
     get_comment_thread_history,
     get_reply_text,
 )
+from lark_doc_whisper.security.policy import extract_allowed_urls
 
 
 _SUPPORTED_FEISHU_LINK_CASES = [
@@ -284,6 +285,35 @@ def test_get_reply_text_preserves_plain_link_label_and_url():
     assert "请分析这个表格" in text
     assert "Q3容量迁移分析" in text
     assert sheet_url in text
+
+
+@pytest.mark.parametrize("element_kind", ["docs_link", "link"])
+def test_get_reply_text_keeps_structured_url_separate_from_following_chinese(element_kind: str):
+    sheet_url = "https://bytedance.sg.larkoffice.com/sheets/KXrUssc3phbcJStV4HolJ3DWgid"
+    if element_kind == "docs_link":
+        link_element = SimpleNamespace(type="docs_link", docs_link=SimpleNamespace(url=sheet_url))
+    else:
+        link_element = SimpleNamespace(type="link", link=SimpleNamespace(url=sheet_url))
+    reply = SimpleNamespace(
+        reply_id="r1",
+        user_id="ou_user",
+        content=SimpleNamespace(
+            elements=[
+                SimpleNamespace(type="text_run", text_run=SimpleNamespace(text="从 ")),
+                link_element,
+                SimpleNamespace(type="text_run", text_run=SimpleNamespace(text=" 里看 103 个表")),
+            ]
+        ),
+    )
+    client = _Client(
+        _Resp(False),
+        reply_list_resp=_Resp(True, SimpleNamespace(items=[reply])),
+    )
+
+    text = get_reply_text(client, "doc_token", "docx", "123", "r1")
+
+    assert f"{sheet_url}里看" not in text
+    assert [item.url for item in extract_allowed_urls(text)] == [sheet_url]
 
 
 @pytest.mark.parametrize(("link_url", "link_label"), _SUPPORTED_FEISHU_LINK_CASES)

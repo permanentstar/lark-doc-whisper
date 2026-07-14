@@ -22,10 +22,15 @@ def _string_value(value) -> str:
     return ""
 
 
-def _first_text(obj, field_names: tuple[str, ...]) -> str:
+def _looks_like_url(value: str) -> bool:
+    return value.startswith(("http://", "https://"))
+
+
+def _first_text(obj, field_names: tuple[str, ...], *, strip: bool = True) -> str:
     for name in field_names:
-        text = _string_value(_get_field(obj, name)).strip()
-        if text:
+        raw = _string_value(_get_field(obj, name))
+        text = raw.strip() if strip else raw
+        if text.strip():
             return text
     return ""
 
@@ -64,7 +69,7 @@ def _element_visible_text(element) -> str:
     payload = _element_payload(element, kind)
 
     if kind == "text_run":
-        return _first_text(payload, ("text", "content"))
+        return _first_text(payload, ("text", "content"), strip=False)
     if kind in {"person", "mention_user"}:
         return _mention_text(payload)
     if kind in {"link", "docs_link", "mention_doc"}:
@@ -72,9 +77,9 @@ def _element_visible_text(element) -> str:
         if label:
             return label
         payload_text = _string_value(payload).strip()
-        if payload_text:
+        if payload_text and not _looks_like_url(payload_text):
             return payload_text
-        return _first_text(payload, ("url", "link"))
+        return ""
 
     if payload is not None:
         text = _first_text(payload, ("text", "content", "title", "name", "display_name", "label"))
