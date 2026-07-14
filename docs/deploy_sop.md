@@ -36,7 +36,7 @@ Before deploying the gateway, first create a bot application on the Lark Open Pl
 
 1. Open the Lark Open Platform app management page: <https://open.larkoffice.com/app?lang=en-US>.
 2. Create a new **custom enterprise app** and enable its bot (Bot) capability as guided.
-3. On the "Credentials & Basic Info" page, copy the **App ID** and **App Secret** — corresponding to `LARK_APP_ID` (#1) and `LARK_APP_SECRET` (#2) in the §3.2 required-items list; put them in `~/.env`.
+3. On the "Credentials & Basic Info" page, copy the **App ID** and **App Secret** — corresponding to `LARK_APP_ID` (#1) and `LARK_APP_SECRET` (#2) in the §3.2 required-items list; put them in `<repo>/configs/.env`.
 4. The gateway resolves the bot's own identity at startup via the Open Platform `bot/v3/info` API, using the App ID / Secret above. No manual bot identity config is needed.
 
 > The app needs read/write permission on doc comments and must enable long-connection (WebSocket) event subscription; the exact scopes and subscribed events follow the Open Platform guidance.
@@ -63,7 +63,7 @@ Secrets are **only loaded from `.env` files**; candidate paths are in `config.py
 `<repo>/configs/.env` → `~/.env` (the **first existing file** in order is loaded).
 `load_dotenv` does not overwrite same-named variables already exported in the process, so variables injected via shell / systemd `EnvironmentFile` also take effect.
 
-> ⚠️ **In practice, put all three secrets in `~/.env` (user-level, reusable across projects)**; the code also supports project-level `configs/.env`.
+> ⚠️ **For production, put all three secrets in `<repo>/configs/.env`** so this service does not depend on a shared user-level `~/.env`.
 > Note the load logic stops at "the first existing .env": if both exist, only `configs/.env` is read — so pick one, don't split them.
 > The repo-root `.env` is **not** in `ENV_CANDIDATES`; placing it there means it won't be read.
 > **Never commit real secrets to git under any circumstances** (`.env` / `configs/.env` are already in `.gitignore`).
@@ -84,20 +84,20 @@ All machine-specific placeholders in the repo are `__fill_me__`. **They must eac
 
 | # | Item | Location | What to fill | Consequence if unset |
 |---|---|---|---|---|
-| 1 | `LARK_APP_ID` | `~/.env` (or `configs/.env`) | Lark app ID | `RuntimeError` fail-fast at startup |
+| 1 | `LARK_APP_ID` | `configs/.env` | Lark app ID | `RuntimeError` fail-fast at startup |
 | 2 | `LARK_APP_SECRET` | same as above | Lark app secret | `RuntimeError` fail-fast at startup |
 | 3 | `LLM_API_KEY` | same as above | model endpoint key (OpenAI-compatible, any provider) | `RuntimeError` fail-fast at startup |
 | 4 | `model` | `configs/deerflow.yaml` | model / endpoint id (e.g. Ark: `ep-xxxxxxxx`; OpenAI: `gpt-4o`, etc.) | first model call fails |
 | 5 | `base_url` | `configs/deerflow.yaml` | the model endpoint's OpenAI-compatible base_url | first model call fails |
 
-> Secrets (#1–#3) are loaded from `.env`, candidate order `configs/.env` → `~/.env` (the first existing file wins; same-named already-exported env vars take priority and are not overwritten). In practice, put all three in a single `~/.env`.
+> Secrets (#1–#3) are loaded from `.env`, candidate order `configs/.env` → `~/.env` (the first existing file wins; same-named already-exported env vars take priority and are not overwritten). For production, keep all three in `configs/.env`.
 > The deerflow dependency is now pulled from git (`pyproject.toml`, tracking main); no local source and no path placeholders to fill.
 > `GITHUB_MCP_AUTHORIZATION` is optional and should be stored in the same `.env` file when GitHub repository reading is needed. Keep the token read-only / no-scope for public repository access.
 
 After replacing, you can visually confirm no leftover placeholders:
 
 ```bash
-grep -rn "__fill_me__" configs/ ~/.env 2>/dev/null   # should print nothing (comments aside)
+grep -rn "__fill_me__" configs/ 2>/dev/null   # should print nothing (comments aside)
 ```
 
 ---
@@ -109,9 +109,9 @@ grep -rn "__fill_me__" configs/ ~/.env 2>/dev/null   # should print nothing (com
 #    No local deer-flow source needed; the build machine needs GitHub access.
 uv sync          # install deps into an isolated venv per the committed uv.lock
 
-# 2. Configure secrets (see §3) — in practice put them in ~/.env (user-level, reusable)
-cp .env.example ~/.env   # then edit and fill in the three secrets
-# Or project-level: cp .env.example configs/.env (pick one, don't use both)
+# 2. Configure secrets (see §3) — production uses repo-scoped configs/.env
+cp .env.example configs/.env
+# Then edit configs/.env and fill in the three secrets
 
 # 3. Against the §3.2 checklist, confirm all __fill_me__ have been replaced
 

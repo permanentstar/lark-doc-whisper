@@ -24,10 +24,10 @@ Group=<DEPLOY_GROUP>
 WorkingDirectory=<REPO_DIR>
 
 # Secrets: LARK_APP_ID / LARK_APP_SECRET / LLM_API_KEY.
-# Point this at the service user's ~/.env (operational default) or the
-# project-level configs/.env. systemd needs an absolute path; keep it out of git.
-EnvironmentFile=/home/<DEPLOY_USER>/.env
-# Alternatively: EnvironmentFile=<REPO_DIR>/configs/.env
+# Production default: keep them repo-scoped in configs/.env so this service
+# does not depend on a shared user-level ~/.env. systemd needs an absolute
+# path; keep the file out of git.
+EnvironmentFile=<REPO_DIR>/configs/.env
 
 # Optional: pin the instance slot (default 0). Uncomment for same-host LB.
 # Environment=WHISPER_SLOT=0
