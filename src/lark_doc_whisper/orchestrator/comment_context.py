@@ -11,18 +11,13 @@ from lark_oapi.api.docx.v1 import ListDocumentBlockRequest
 from ..config import AppConfig
 from ..lark.comments import CommentContext, get_comment_thread_history
 from ..lark.doc_fetcher import fetch_doc_text
+from ..lark.rich_text import render_rich_text_elements
 
 
 def _text_elements_content(text_obj) -> str:
     if text_obj is None or not getattr(text_obj, "elements", None):
         return ""
-    parts: list[str] = []
-    for element in text_obj.elements:
-        text_run = getattr(element, "text_run", None)
-        content = getattr(text_run, "content", None)
-        if content:
-            parts.append(content)
-    return "".join(parts).strip()
+    return render_rich_text_elements(text_obj.elements, include_urls=False)
 
 
 def _block_heading_level(block) -> Optional[int]:

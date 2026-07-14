@@ -2,12 +2,28 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from lark_doc_whisper.lark.comments import (
     CommentContext,
     get_comment_context,
     get_comment_thread_history,
     get_reply_text,
 )
+
+
+_SUPPORTED_FEISHU_LINK_CASES = [
+    ("https://bytedance.sg.larkoffice.com/docx/dx1", "产品文档"),
+    ("https://bytedance.sg.larkoffice.com/wiki/wk1", "知识库节点"),
+    ("https://bytedance.sg.larkoffice.com/sheets/sh1", "电子表格"),
+    ("https://bytedance.sg.larkoffice.com/base/ba1", "多维表格"),
+    ("https://bytedance.sg.larkoffice.com/bitable/bi1", "多维表格视图"),
+    ("https://bytedance.sg.larkoffice.com/slides/sl1", "幻灯片"),
+    ("https://bytedance.sg.larkoffice.com/file/fl1", "云盘文件"),
+    ("https://bytedance.sg.larkoffice.com/board/bd1", "飞书画板"),
+    ("https://bytedance.sg.larkoffice.com/docs/lg1", "旧版飞书文档"),
+    ("https://bytedance.sg.larkoffice.com/mindnotes/mn1", "思维笔记"),
+]
 
 
 class _Resp:
@@ -80,16 +96,42 @@ class _Client:
         )
 
 
-def _reply(reply_id: str, text: str, *, docs_url: str = "") -> SimpleNamespace:
+def _reply(
+    reply_id: str,
+    text: str,
+    *,
+    docs_url: str = "",
+    link_url: str = "",
+    link_label: str = "",
+    person_name: str = "",
+    mention_name: str = "",
+    user_id: str = "ou_user",
+) -> SimpleNamespace:
     elements = [
         SimpleNamespace(type="text_run", text_run=SimpleNamespace(text=text)),
     ]
+    if person_name:
+        elements.append(
+            SimpleNamespace(type="person", person=SimpleNamespace(name=person_name))
+        )
+    if mention_name:
+        elements.append(
+            SimpleNamespace(type="mention_user", mention_user=SimpleNamespace(name=mention_name))
+        )
     if docs_url:
         elements.append(
             SimpleNamespace(type="docs_link", docs_link=SimpleNamespace(url=docs_url))
         )
+    if link_url:
+        elements.append(
+            SimpleNamespace(
+                type="link",
+                link=SimpleNamespace(url=link_url, text=link_label) if link_label else link_url,
+            )
+        )
     return SimpleNamespace(
         reply_id=reply_id,
+        user_id=user_id,
         content=SimpleNamespace(elements=elements),
     )
 
@@ -201,6 +243,297 @@ def test_get_reply_text_preserves_docs_link_url():
 
     assert "可以先看看这个文档" in text
     assert docs_url in text
+
+
+def test_get_reply_text_preserves_plain_link_url():
+    sheet_url = "https://bytedance.sg.larkoffice.com/sheets/ss_token?sheet=sh_1"
+    client = _Client(
+        _Resp(False),
+        reply_list_resp=_Resp(
+            True,
+            SimpleNamespace(
+                items=[
+                    _reply("r1", "请分析这个表格 ", link_url=sheet_url),
+                ],
+            ),
+        ),
+    )
+
+    text = get_reply_text(client, "doc_token", "docx", "123", "r1")
+
+    assert "请分析这个表格" in text
+    assert sheet_url in text
+
+
+def test_get_reply_text_preserves_plain_link_label_and_url():
+    sheet_url = "https://bytedance.sg.larkoffice.com/sheets/ss_token?sheet=sh_1"
+    client = _Client(
+        _Resp(False),
+        reply_list_resp=_Resp(
+            True,
+            SimpleNamespace(
+                items=[
+                    _reply("r1", "请分析这个表格 ", link_url=sheet_url, link_label="Q3容量迁移分析"),
+                ],
+            ),
+        ),
+    )
+
+    text = get_reply_text(client, "doc_token", "docx", "123", "r1")
+
+    assert "请分析这个表格" in text
+    assert "Q3容量迁移分析" in text
+    assert sheet_url in text
+
+
+@pytest.mark.parametrize(("link_url", "link_label"), _SUPPORTED_FEISHU_LINK_CASES)
+def test_get_reply_text_preserves_supported_feishu_link_matrix(link_url: str, link_label: str):
+    client = _Client(
+        _Resp(False),
+        reply_list_resp=_Resp(
+            True,
+            SimpleNamespace(
+                items=[
+                    _reply("r1", "请分析这个链接 ", link_url=link_url, link_label=link_label),
+                ],
+            ),
+        ),
+    )
+
+    text = get_reply_text(client, "doc_token", "docx", "123", "r1")
+
+    assert "请分析这个链接" in text
+    assert link_label in text
+    assert link_url in text
+
+
+def test_get_reply_text_preserves_person_and_mention_names():
+    client = _Client(
+        _Resp(False),
+        reply_list_resp=_Resp(
+            True,
+            SimpleNamespace(
+                items=[
+                    _reply("r1", "请继续排查", person_name="抖云", mention_name="苏恒"),
+                ],
+            ),
+        ),
+    )
+
+    text = get_reply_text(client, "doc_token", "docx", "123", "r1")
+
+    assert "@抖云" in text
+    assert "@苏恒" in text
+    assert "请继续排查" in text
+
+
+def test_get_reply_text_reads_top_level_comment_from_file_comment_when_reply_id_missing():
+    sheet_url = "https://bytedance.sg.larkoffice.com/sheets/ss_token?sheet=sh_1"
+    client = _Client(
+        _Resp(
+            True,
+            SimpleNamespace(
+                reply_list=SimpleNamespace(
+                    replies=[
+                        _reply("root_reply", "请分析这个表格 ", docs_url=sheet_url, user_id="ou_user"),
+                        _reply("old_bot_reply", "旧回复", user_id="ou_bot"),
+                    ],
+                ),
+            ),
+        ),
+        reply_list_resp=_Resp(
+            True,
+            SimpleNamespace(items=[_reply("old_bot_reply", "旧回复", user_id="ou_bot")]),
+        ),
+    )
+
+    text = get_reply_text(
+        client,
+        "doc_token",
+        "docx",
+        "123",
+        None,
+        from_user_open_id="ou_user",
+    )
+
+    assert "请分析这个表格" in text
+    assert sheet_url in text
+
+
+def test_get_reply_text_reads_top_level_comment_link_label_and_url_from_file_comment():
+    sheet_url = "https://bytedance.sg.larkoffice.com/sheets/ss_token?sheet=sh_1"
+    client = _Client(
+        _Resp(
+            True,
+            SimpleNamespace(
+                reply_list=SimpleNamespace(
+                    replies=[
+                        _reply(
+                            "root_reply",
+                            "请看这个表格 ",
+                            link_url=sheet_url,
+                            link_label="Q3容量迁移分析",
+                            user_id="ou_user",
+                        ),
+                        _reply("old_bot_reply", "旧回复", user_id="ou_bot"),
+                    ],
+                ),
+            ),
+        ),
+        reply_list_resp=_Resp(
+            True,
+            SimpleNamespace(items=[_reply("old_bot_reply", "旧回复", user_id="ou_bot")]),
+        ),
+    )
+
+    text = get_reply_text(
+        client,
+        "doc_token",
+        "docx",
+        "123",
+        None,
+        from_user_open_id="ou_user",
+    )
+
+    assert "请看这个表格" in text
+    assert "Q3容量迁移分析" in text
+    assert sheet_url in text
+
+
+@pytest.mark.parametrize(("link_url", "link_label"), _SUPPORTED_FEISHU_LINK_CASES)
+def test_get_reply_text_reads_top_level_supported_feishu_link_matrix(link_url: str, link_label: str):
+    client = _Client(
+        _Resp(
+            True,
+            SimpleNamespace(
+                reply_list=SimpleNamespace(
+                    replies=[
+                        _reply(
+                            "root_reply",
+                            "请看这个链接 ",
+                            link_url=link_url,
+                            link_label=link_label,
+                            user_id="ou_user",
+                        ),
+                        _reply("old_bot_reply", "旧回复", user_id="ou_bot"),
+                    ],
+                ),
+            ),
+        ),
+        reply_list_resp=_Resp(
+            True,
+            SimpleNamespace(items=[_reply("old_bot_reply", "旧回复", user_id="ou_bot")]),
+        ),
+    )
+
+    text = get_reply_text(
+        client,
+        "doc_token",
+        "docx",
+        "123",
+        None,
+        from_user_open_id="ou_user",
+    )
+
+    assert "请看这个链接" in text
+    assert link_label in text
+    assert link_url in text
+
+
+def test_get_reply_text_falls_back_to_file_comment_when_exact_reply_missing_from_reply_api():
+    docs_url = "https://bytedance.sg.larkoffice.com/bitable/app_token?table=tbl_1"
+    client = _Client(
+        _Resp(
+            True,
+            SimpleNamespace(
+                reply_list=SimpleNamespace(
+                    replies=[
+                        _reply("r1", "旧问题", user_id="ou_user"),
+                        _reply("r2", "看这个多维表 ", docs_url=docs_url, user_id="ou_user"),
+                    ],
+                ),
+            ),
+        ),
+        reply_list_resp=_Resp(
+            True,
+            SimpleNamespace(items=[_reply("r1", "旧问题", user_id="ou_user")]),
+        ),
+    )
+
+    text = get_reply_text(
+        client,
+        "doc_token",
+        "docx",
+        "123",
+        "r2",
+        from_user_open_id="ou_user",
+    )
+
+    assert "看这个多维表" in text
+    assert docs_url in text
+
+
+def test_get_reply_text_reads_top_level_comment_plain_link_from_file_comment():
+    sheet_url = "https://bytedance.sg.larkoffice.com/sheets/ss_token?sheet=sh_1"
+    client = _Client(
+        _Resp(
+            True,
+            SimpleNamespace(
+                reply_list=SimpleNamespace(
+                    replies=[
+                        _reply("root_reply", "请看这个链接 ", link_url=sheet_url, user_id="ou_user"),
+                        _reply("old_bot_reply", "旧回复", user_id="ou_bot"),
+                    ],
+                ),
+            ),
+        ),
+        reply_list_resp=_Resp(
+            True,
+            SimpleNamespace(items=[_reply("old_bot_reply", "旧回复", user_id="ou_bot")]),
+        ),
+    )
+
+    text = get_reply_text(
+        client,
+        "doc_token",
+        "docx",
+        "123",
+        None,
+        from_user_open_id="ou_user",
+    )
+
+    assert "请看这个链接" in text
+    assert sheet_url in text
+
+
+def test_get_comment_thread_history_preserves_link_label_and_url():
+    sheet_url = "https://bytedance.sg.larkoffice.com/sheets/ss_token?sheet=sh_1"
+    client = _Client(
+        _Resp(False),
+        reply_list_resp=_Resp(
+            True,
+            SimpleNamespace(
+                items=[
+                    _reply("r1", "第一问"),
+                    _reply("r2", "先看这个表格 ", link_url=sheet_url, link_label="Q3容量迁移分析"),
+                    _reply("r3", "当前追问"),
+                ],
+            ),
+        ),
+    )
+
+    history = get_comment_thread_history(
+        client,
+        "doc_token",
+        "docx",
+        "123",
+        current_reply_id="r3",
+        limit=8,
+        max_chars=1000,
+    )
+
+    assert "Q3容量迁移分析" in history
+    assert sheet_url in history
 
 
 def test_get_comment_thread_history_excludes_current_reply_and_keeps_recent_window():

@@ -14,7 +14,25 @@ class _Resp:
         return self._ok
 
 
-def _text_block(block_id: str, parent_id: str, text: str) -> SimpleNamespace:
+def _inline_text(text: str) -> SimpleNamespace:
+    return SimpleNamespace(text_run=SimpleNamespace(content=text))
+
+
+def _inline_link(text: str, url: str) -> SimpleNamespace:
+    return SimpleNamespace(type="link", link=SimpleNamespace(text=text, url=url))
+
+
+def _inline_mention(name: str) -> SimpleNamespace:
+    return SimpleNamespace(type="mention_user", mention_user=SimpleNamespace(name=name))
+
+
+def _text_block(
+    block_id: str,
+    parent_id: str,
+    text: str = "",
+    *,
+    elements: list[SimpleNamespace] | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         block_id=block_id,
         parent_id=parent_id,
@@ -29,7 +47,7 @@ def _text_block(block_id: str, parent_id: str, text: str) -> SimpleNamespace:
         heading8=None,
         heading9=None,
         text=SimpleNamespace(
-            elements=[SimpleNamespace(text_run=SimpleNamespace(content=text))],
+            elements=elements or [_inline_text(text)],
         ),
         bullet=None,
         ordered=None,
@@ -58,7 +76,7 @@ def _heading_block(block_id: str, parent_id: str, level: int, text: str) -> Simp
         "heading9": None,
     }
     kwargs[f"heading{level}"] = SimpleNamespace(
-        elements=[SimpleNamespace(text_run=SimpleNamespace(content=text))],
+        elements=[_inline_text(text)],
     )
     return SimpleNamespace(
         block_id=block_id,
@@ -262,6 +280,70 @@ def test_provider_resolves_section_from_anchor():
     assert "10. 配置建议" in section
     assert "program gate 控窗口和轮次" in section
     assert "11. 最终落点" not in section
+
+
+def test_provider_preserves_link_and_mention_visible_text_in_blocks():
+    doc_id = "doc_1"
+    blocks = [
+        SimpleNamespace(
+            block_id=doc_id,
+            parent_id="",
+            children=["p1"],
+            heading1=None,
+            heading2=None,
+            heading3=None,
+            heading4=None,
+            heading5=None,
+            heading6=None,
+            heading7=None,
+            heading8=None,
+            heading9=None,
+            text=None,
+            bullet=None,
+            ordered=None,
+            code=None,
+            quote=None,
+            todo=None,
+            callout=None,
+            table=None,
+            board=None,
+            grid=None,
+            grid_column=None,
+            page=None,
+        ),
+        _text_block(
+            "p1",
+            doc_id,
+            elements=[
+                _inline_text("请基于 "),
+                _inline_link(
+                    "Q3容量迁移分析",
+                    "https://bytedance.sg.larkoffice.com/sheets/ss_token?sheet=sh_1",
+                ),
+                _inline_text(" 联系 "),
+                _inline_mention("苏恒"),
+                _inline_text(" 确认"),
+            ],
+        ),
+    ]
+
+    provider = CommentContextProvider(
+        client=_Client(blocks, raw_text="整篇文档原文"),
+        file_token=doc_id,
+        file_type="docx",
+        quote="请基于",
+        anchor_block_id="p1",
+        max_nearby_before=0,
+        max_nearby_after=0,
+        max_context_chars=2000,
+    )
+
+    nearby = provider.resolve("nearby")
+
+    assert "请基于" in nearby
+    assert "Q3容量迁移分析" in nearby
+    assert "@苏恒" in nearby
+    assert "确认" in nearby
 
 
 def test_provider_returns_empty_nearby_without_anchor():

@@ -417,6 +417,7 @@ def test_fetch_url_content_uses_user_doc_token_when_bot_lacks_permission(monkeyp
 @pytest.mark.parametrize(
     "kind,url,label",
     [
+        ("feishu_slides", "https://bytedance.sg.larkoffice.com/slides/sl1", "飞书幻灯片"),
         ("feishu_docs", "https://bytedance.sg.larkoffice.com/docs/lg1", "旧版飞书文档"),
         ("feishu_mindnote", "https://bytedance.sg.larkoffice.com/mindnotes/mn1", "飞书思维笔记"),
     ],
@@ -434,19 +435,26 @@ def test_preflight_rejects_unsupported_feishu_kinds_with_clear_reply(kind, url, 
     assert "没有权限" not in result.reply_text
 
 
-def test_fetch_url_content_tool_rejects_unsupported_feishu_kinds():
-    url = "https://bytedance.sg.larkoffice.com/docs/lg1"
+@pytest.mark.parametrize(
+    "kind,url",
+    [
+        ("feishu_slides", "https://bytedance.sg.larkoffice.com/slides/sl1"),
+        ("feishu_docs", "https://bytedance.sg.larkoffice.com/docs/lg1"),
+        ("feishu_mindnote", "https://bytedance.sg.larkoffice.com/mindnotes/mn1"),
+    ],
+)
+def test_fetch_url_content_tool_rejects_unsupported_feishu_kinds(kind, url):
     bag_token = current_doc_context_bag.set({})
     ctx_token = current_url_fetch_context.set(
         UrlFetchContext(
             client=object(),
             cfg=UrlFetchConfig(),
-            allowed_urls=(AllowedUrl(url=url, kind="feishu_docs"),),
+            allowed_urls=(AllowedUrl(url=url, kind=kind),),
         )
     )
     try:
         result = fetch_url_content_tool.invoke({"url": url, "reason": "read"})
-        assert "unsupported_feishu_type:feishu_docs" in result
+        assert f"unsupported_feishu_type:{kind}" in result
     finally:
         current_url_fetch_context.reset(ctx_token)
         current_doc_context_bag.reset(bag_token)
@@ -558,12 +566,6 @@ def test_preflight_allows_feishu_bitable_when_fetch_succeeds(monkeypatch):
     "kind,url,patch_target,expected_call",
     [
         (
-            "feishu_slides",
-            "https://bytedance.sg.larkoffice.com/slides/sl_tok",
-            "lark_doc_whisper.agent.url_fetch.fetch_slides_text",
-            {"token": "sl_tok"},
-        ),
-        (
             "feishu_file",
             "https://bytedance.sg.larkoffice.com/file/file_tok",
             "lark_doc_whisper.agent.url_fetch.fetch_file_metadata_text",
@@ -606,7 +608,6 @@ def test_fetch_url_content_reads_other_supported_feishu_kinds(monkeypatch, kind,
 @pytest.mark.parametrize(
     "obj_type,patch_target",
     [
-        ("slides", "lark_doc_whisper.agent.url_fetch.fetch_slides_text"),
         ("file", "lark_doc_whisper.agent.url_fetch.fetch_file_metadata_text"),
         ("whiteboard", "lark_doc_whisper.agent.url_fetch.fetch_whiteboard_text"),
     ],
@@ -644,6 +645,35 @@ def test_fetch_url_content_resolves_feishu_wiki_to_other_supported_types(monkeyp
         assert "url content attached" in result
         assert f"{obj_type} content" in current_doc_context_bag.get()["url_content"]
         assert calls == [{"token": "obj_token"}]
+    finally:
+        current_url_fetch_context.reset(ctx_token)
+        current_doc_context_bag.reset(bag_token)
+
+
+def test_fetch_url_content_rejects_feishu_wiki_backed_by_slides():
+    fake_client = SimpleNamespace(
+        wiki=SimpleNamespace(
+            v2=SimpleNamespace(
+                space=SimpleNamespace(
+                    get_node=lambda request: SimpleNamespace(
+                        success=lambda: True,
+                        data=SimpleNamespace(node=SimpleNamespace(obj_type="slides", obj_token="obj_token")),
+                    )
+                )
+            )
+        )
+    )
+    bag_token = current_doc_context_bag.set({})
+    ctx_token = current_url_fetch_context.set(
+        UrlFetchContext(
+            client=fake_client,
+            cfg=UrlFetchConfig(),
+            allowed_urls=(AllowedUrl(url="https://bytedance.sg.larkoffice.com/wiki/wiki_token", kind="feishu_wiki"),),
+        )
+    )
+    try:
+        result = fetch_url_content_tool.invoke({"url": "https://bytedance.sg.larkoffice.com/wiki/wiki_token", "reason": "read"})
+        assert "unsupported_feishu_type:feishu_slides" in result
     finally:
         current_url_fetch_context.reset(ctx_token)
         current_doc_context_bag.reset(bag_token)

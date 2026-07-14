@@ -333,7 +333,12 @@ async def handle_comment_event(
 
     # 3. pull the user's actual question text from the source reply
     user_query = get_reply_text(
-        ctx.api_client, meta.file_token, file_type, meta.comment_id, meta.reply_id,
+        ctx.api_client,
+        meta.file_token,
+        file_type,
+        meta.comment_id,
+        meta.reply_id,
+        from_user_open_id=meta.from_open_id,
     )
     if not user_query:
         logger.warning("empty user_query; replying with a stub")

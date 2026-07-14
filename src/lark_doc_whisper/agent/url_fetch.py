@@ -25,7 +25,6 @@ from ..lark.bitable_fetcher import fetch_bitable_text
 from ..lark.doc_fetcher import fetch_doc_text, fetch_doc_text_with_user_access_token
 from ..lark.drive_fetcher import fetch_file_metadata_text
 from ..lark.sheets_fetcher import fetch_sheet_text
-from ..lark.slides_fetcher import fetch_slides_text
 from ..lark.whiteboard_fetcher import fetch_whiteboard_text
 from ..security.policy import AllowedUrl
 from ..state.user_doc_tokens import InMemoryUserDocTokenStore
@@ -287,10 +286,6 @@ def _fetch_feishu_text_as_bot(ctx: UrlFetchContext, url: str, kind: str) -> tupl
         text = fetch_bitable_text(ctx.client, token, table_id=table_id, max_rows=200)
         return (text, "") if text else ("", "permission_or_auth_required")
 
-    if kind == "feishu_slides":
-        text = fetch_slides_text(ctx.client, token)
-        return (text, "") if text else ("", "permission_or_auth_required")
-
     if kind == "feishu_file":
         text = fetch_file_metadata_text(ctx.client, token, "file")
         return (text, "") if text else ("", "permission_or_auth_required")
@@ -318,8 +313,7 @@ def _fetch_feishu_text_as_bot(ctx: UrlFetchContext, url: str, kind: str) -> tupl
         text = fetch_bitable_text(ctx.client, obj_token, table_id=None, max_rows=200)
         return (text, "") if text else ("", "permission_or_auth_required")
     if obj_type == "slides":
-        text = fetch_slides_text(ctx.client, obj_token)
-        return (text, "") if text else ("", "permission_or_auth_required")
+        return "", "unsupported_feishu_type:feishu_slides"
     if obj_type == "file":
         text = fetch_file_metadata_text(ctx.client, obj_token, "file")
         return (text, "") if text else ("", "permission_or_auth_required")

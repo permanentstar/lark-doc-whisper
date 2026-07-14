@@ -11,10 +11,13 @@ from lark_oapi.api.drive.v1 import (
     BatchQueryFileCommentRequestBody,
     CreateFileCommentReplyRequest,
     FileCommentReply,
+    GetFileCommentRequest,
     ListFileCommentReplyRequest,
     ReplyContent,
     ReplyElement,
 )
+
+from .rich_text import render_rich_text_elements
 
 
 @dataclass(frozen=True)
@@ -54,15 +57,74 @@ def _truncate(text: str, limit: int) -> str:
 def _reply_plain_text(reply) -> str:
     if reply is None or not getattr(reply, "content", None) or not getattr(reply.content, "elements", None):
         return ""
-    parts: list[str] = []
-    for el in reply.content.elements:
-        if el.type == "text_run" and el.text_run and el.text_run.text:
-            parts.append(el.text_run.text)
-        elif el.type == "docs_link" and getattr(el, "docs_link", None):
-            url = str(getattr(el.docs_link, "url", "") or "").strip()
-            if url:
-                parts.append(url)
-    return " ".join(part.strip() for part in parts if part and part.strip()).strip()
+    return render_rich_text_elements(reply.content.elements, include_urls=True)
+
+
+def _pick_reply_text(
+    replies,
+    *,
+    reply_id: Optional[str],
+    from_user_open_id: Optional[str],
+    prefer_oldest: bool,
+) -> str:
+    items = list(replies or [])
+    if not items:
+        return ""
+
+    if reply_id:
+        for reply in items:
+            if str(getattr(reply, "reply_id", "") or "") != str(reply_id):
+                continue
+            text = _reply_plain_text(reply)
+            if text:
+                return text
+        return ""
+
+    ordered = items if prefer_oldest else list(reversed(items))
+    if from_user_open_id:
+        for reply in ordered:
+            if str(getattr(reply, "user_id", "") or "") != str(from_user_open_id):
+                continue
+            text = _reply_plain_text(reply)
+            if text:
+                return text
+
+    for reply in ordered:
+        text = _reply_plain_text(reply)
+        if text:
+            return text
+    return ""
+
+
+def _get_comment_replies(
+    client: lark.Client,
+    file_token: str,
+    file_type: str,
+    comment_id: str,
+):
+    if not comment_id:
+        return []
+    try:
+        numeric_comment_id = int(comment_id)
+    except (TypeError, ValueError):
+        return []
+
+    req = (
+        GetFileCommentRequest.builder()
+        .file_token(file_token)
+        .comment_id(numeric_comment_id)
+        .file_type(file_type)
+        .user_id_type("open_id")
+        .build()
+    )
+    try:
+        resp = client.drive.v1.file_comment.get(req)
+    except Exception:
+        return []
+    if not resp.success() or not resp.data:
+        return []
+    reply_list = getattr(resp.data, "reply_list", None)
+    return list(getattr(reply_list, "replies", None) or [])
 
 
 def get_reply_text(
@@ -71,11 +133,23 @@ def get_reply_text(
     file_type: str,
     comment_id: str,
     reply_id: Optional[str],
+    *,
+    from_user_open_id: Optional[str] = None,
 ) -> str:
     """Pull the source reply (or its parent comment's last reply) text.
 
     Returns "" if anything fails — callers are expected to handle the empty case.
     """
+    if not reply_id:
+        text = _pick_reply_text(
+            _get_comment_replies(client, file_token, file_type, comment_id),
+            reply_id=None,
+            from_user_open_id=from_user_open_id,
+            prefer_oldest=True,
+        )
+        if text:
+            return text
+
     req = (
         ListFileCommentReplyRequest.builder()
         .file_token(file_token)
@@ -86,18 +160,22 @@ def get_reply_text(
         .build()
     )
     resp = client.drive.v1.file_comment_reply.list(req)
-    if not resp.success():
-        return ""
-    items = (resp.data.items if resp.data and resp.data.items else []) or []
-    target = None
-    if reply_id:
-        for r in items:
-            if r.reply_id == reply_id:
-                target = r
-                break
-    if target is None and items:
-        target = items[-1]
-    return _reply_plain_text(target)
+    items = (resp.data.items if resp.success() and resp.data and resp.data.items else []) or []
+    text = _pick_reply_text(
+        items,
+        reply_id=reply_id,
+        from_user_open_id=from_user_open_id,
+        prefer_oldest=False,
+    )
+    if text:
+        return text
+
+    return _pick_reply_text(
+        _get_comment_replies(client, file_token, file_type, comment_id),
+        reply_id=reply_id,
+        from_user_open_id=from_user_open_id,
+        prefer_oldest=False,
+    )
 
 
 def get_comment_thread_history(
