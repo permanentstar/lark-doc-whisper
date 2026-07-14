@@ -304,6 +304,45 @@ def test_handler_allows_url_fetch_for_links_from_thread_history(monkeypatch):
     ]
 
 
+def test_handler_injects_readable_feishu_url_content_into_doc_context(monkeypatch):
+    backend = _Backend()
+    ctx = HandlerContext(cfg=_cfg(), api_client=object(), backend=backend, bot_open_id="ou_bot")
+    sheet_url = "https://bytedance.sg.larkoffice.com/sheets/sheet_token"
+
+    def _fake_sheet_fetch(client, spreadsheet_token, *, sheet_id, max_rows):
+        assert spreadsheet_token == "sheet_token"
+        assert sheet_id is None
+        assert max_rows == 200
+        return "### Sheet: Q3 容量迁移分析\n| 业务子域 | 表数 |\n| --- | --- |\n| 数据仓库 | 23 |"
+
+    monkeypatch.setattr(comment_handler.seen_events, "is_seen", lambda *_, **__: False)
+    monkeypatch.setattr(comment_handler.seen_events, "mark_seen", lambda *_, **__: None)
+    monkeypatch.setattr(comment_handler, "get_reply_text", lambda *_, **__: f"从 {sheet_url} 里看 103 个表")
+    monkeypatch.setattr(
+        comment_handler,
+        "get_comment_thread_history",
+        lambda *_, **__: '<reply index="1" reply_id="old_bot">旧回复说 Cookie/SSO 失败</reply>',
+    )
+    monkeypatch.setattr(
+        comment_handler,
+        "get_comment_context",
+        lambda *_, **__: CommentContext(quote="103", is_whole=False, anchor_block_id="blk_anchor"),
+    )
+    monkeypatch.setattr(comment_handler, "fetch_doc_text", lambda *_, **__: "")
+    monkeypatch.setattr("lark_doc_whisper.agent.url_fetch.fetch_sheet_text", _fake_sheet_fetch)
+    monkeypatch.setattr(comment_handler, "post_reply", lambda *_, **__: "reply_1")
+
+    _run_handler(_event(), ctx)
+
+    doc_context = backend.calls[0][2]
+    assert isinstance(doc_context, DocPromptContext)
+    assert "url_content" in doc_context.contexts
+    assert sheet_url in doc_context.contexts["url_content"]
+    assert "source=\"lark_bot_openapi\"" in doc_context.contexts["url_content"]
+    assert "数据仓库" in doc_context.contexts["url_content"]
+    assert list(doc_context.contexts) == ["comment_thread_history", "url_content"]
+
+
 def test_handler_replies_permission_instruction_for_unreadable_feishu_url(monkeypatch):
     backend = _Backend()
     failure_store = _FailureStore()

@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
 import ipaddress
 import json
 import re
@@ -55,6 +56,14 @@ class UrlPreflightResult:
     reason: str = ""
     reply_text: str = ""
     authorization_url: str = ""
+    fetched_contents: tuple["FetchedUrlContent", ...] = ()
+
+
+@dataclass(frozen=True)
+class FetchedUrlContent:
+    url: str
+    kind: str
+    text: str
 
 
 current_url_fetch_context: ContextVar[UrlFetchContext | None] = ContextVar(
@@ -207,6 +216,23 @@ def _allowed_url(ctx: UrlFetchContext, url: str) -> AllowedUrl | None:
 def _build_url_receipt(*, url: str, context_text: str) -> str:
     digest = hashlib.sha256(context_text.encode("utf-8")).hexdigest()[:16]
     return f"[url content attached: url={url}, chars={len(context_text)}, sha256={digest}]"
+
+
+def build_fetched_url_context(contents: tuple[FetchedUrlContent, ...]) -> str:
+    lines: list[str] = []
+    for item in contents:
+        if not item.text:
+            continue
+        url = html.escape(item.url, quote=True)
+        kind = html.escape(item.kind, quote=True)
+        lines.extend(
+            [
+                f'<url-content url="{url}" kind="{kind}" source="lark_bot_openapi">',
+                item.text,
+                "</url-content>",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def _reject_private_host(url: str, *, allow_private_ip: bool) -> str:
@@ -365,11 +391,12 @@ def preflight_feishu_urls(
     auth_request: UrlAuthorizationRequest | None = None,
     user_doc_token_store: InMemoryUserDocTokenStore | None = None,
 ) -> UrlPreflightResult:
+    fetched_contents: list[FetchedUrlContent] = []
     for candidate in allowed_urls:
         if not candidate.kind.startswith("feishu_"):
             continue
         try:
-            _, error = _fetch_feishu_text(
+            text, error = _fetch_feishu_text(
                 UrlFetchContext(
                     client=client,
                     cfg=cfg,
@@ -382,6 +409,17 @@ def preflight_feishu_urls(
             )
         except Exception:
             error = "permission_or_auth_required"
+            text = ""
+        if not error:
+            if text:
+                fetched_contents.append(
+                    FetchedUrlContent(
+                        url=candidate.url,
+                        kind=candidate.kind,
+                        text=text,
+                    )
+                )
+            continue
         if error == "permission_or_auth_required":
             authorization_url = _build_authorization_url(
                 auth_cfg=cfg.authorization,
@@ -412,7 +450,7 @@ def preflight_feishu_urls(
                 reason=error,
                 reply_text=f"我暂时无法读取这个飞书链接（{error}）。请确认链接类型和权限后重新 @我。",
             )
-    return UrlPreflightResult(allowed=True)
+    return UrlPreflightResult(allowed=True, fetched_contents=tuple(fetched_contents))
 
 
 @tool("fetch_url_content")

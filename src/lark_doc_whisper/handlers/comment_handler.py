@@ -18,7 +18,12 @@ from .. import thread_id as tid
 from ..agent.backend import HarnessBackend
 from ..agent.doc_context import DocPromptContext
 from ..agent.episode_summarizer import summarize_episode
-from ..agent.url_fetch import UrlAuthorizationRequest, UrlFetchContext, preflight_feishu_urls
+from ..agent.url_fetch import (
+    UrlAuthorizationRequest,
+    UrlFetchContext,
+    build_fetched_url_context,
+    preflight_feishu_urls,
+)
 from ..config import AppConfig
 from ..lark.comments import (
     get_comment_context,
@@ -445,6 +450,11 @@ async def handle_comment_event(
             context_parts["document"] = doc_text
     if thread_history:
         context_parts["comment_thread_history"] = thread_history
+    fetched_url_context = build_fetched_url_context(feishu_url_preflight.fetched_contents)
+    if fetched_url_context:
+        # Keep freshly fetched Feishu content after historical replies so old
+        # failure text cannot overshadow the current authoritative read.
+        context_parts["url_content"] = fetched_url_context
 
     doc_prompt_context = DocPromptContext(
         file_token=meta.file_token,

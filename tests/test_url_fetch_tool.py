@@ -212,6 +212,30 @@ def test_preflight_feishu_urls_reports_permission_required(monkeypatch):
     assert "没有权限访问这个链接" in result.reply_text
 
 
+def test_preflight_feishu_urls_keeps_readable_sheet_content(monkeypatch):
+    url = "https://bytedance.sg.larkoffice.com/sheets/sheet_token"
+
+    def _fake_sheet_fetch(client, spreadsheet_token, *, sheet_id, max_rows):
+        assert spreadsheet_token == "sheet_token"
+        assert sheet_id is None
+        assert max_rows == 200
+        return "### Sheet: Q3\n| 业务子域 | 表数 |\n| --- | --- |\n| 数据仓库 | 23 |"
+
+    monkeypatch.setattr("lark_doc_whisper.agent.url_fetch.fetch_sheet_text", _fake_sheet_fetch)
+
+    result = preflight_feishu_urls(
+        client=object(),
+        cfg=UrlFetchConfig(),
+        allowed_urls=(AllowedUrl(url=url, kind="feishu_sheets"),),
+    )
+
+    assert result.allowed is True
+    assert len(result.fetched_contents) == 1
+    assert result.fetched_contents[0].url == url
+    assert result.fetched_contents[0].kind == "feishu_sheets"
+    assert "数据仓库" in result.fetched_contents[0].text
+
+
 def test_preflight_feishu_urls_returns_oauth_link_when_configured(monkeypatch):
     monkeypatch.setattr("lark_doc_whisper.agent.url_fetch.fetch_doc_text", lambda *_, **__: "")
 
