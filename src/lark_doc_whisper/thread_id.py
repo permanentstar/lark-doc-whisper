@@ -1,6 +1,6 @@
 """Session / thread id construction and parsing.
 
-Format: ``doc__<file_token>__user__<user_open_id>``
+Format: ``doc__<file_token>__user__<user_open_id>``.
 
 Per-(doc, user) granularity: same user in same doc share context, different
 users in same doc are isolated, same user in different docs is isolated too.

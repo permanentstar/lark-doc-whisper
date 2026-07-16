@@ -236,6 +236,10 @@ def _record_failure(
     return event
 
 
+def _conversation_id_for(meta: "_EventMeta") -> str:
+    return tid.build(meta.file_token, meta.from_open_id or "")
+
+
 # deerflow's llm_error_handling_middleware swallows provider exceptions and
 # returns a natural-language fallback AIMessage. HarnessBackend.chat flattens
 # it to a str, so the only signal we get downstream is the message body. We
@@ -265,7 +269,7 @@ class _EventMeta:
     comment_id: str
     # 当前触发事件对应的 reply ID，用于回读用户实际那条提问正文。
     reply_id: Optional[str]
-    # 发起这条评论/回复的用户 open_id，也是 session_id 的一部分。
+    # 发起这条评论/回复的用户 open_id，也是 conversation_id 的一部分。
     from_open_id: Optional[str]
     # 被 @ 的对象 open_id；首次事件可借此学习 bot 自己的 open_id。
     to_open_id: Optional[str]
@@ -398,7 +402,7 @@ async def handle_comment_event(
         _record_failure(
             ctx,
             meta,
-            session_id=tid.build(meta.file_token, meta.from_open_id),
+            session_id=_conversation_id_for(meta),
             stage="url_fetch",
             error=RuntimeError(f"{feishu_url_preflight.reason}: {feishu_url_preflight.url}"),
             fallback_reply_text=feishu_url_preflight.reply_text,
@@ -430,7 +434,7 @@ async def handle_comment_event(
         _record_failure(
             ctx,
             meta,
-            session_id=tid.build(meta.file_token, meta.from_open_id),
+            session_id=_conversation_id_for(meta),
             stage="comment_context",
             error=RuntimeError("missing quote and anchor_block_id for partial comment"),
             fallback_reply_text=COMMENT_CONTEXT_MISSING_REPLY_TEXT,
@@ -477,15 +481,15 @@ async def handle_comment_event(
         current_reply_id=meta.reply_id or "",
     )
 
-    # 5. serialize same-thread requests; cross-thread runs in parallel
-    session_id = tid.build(meta.file_token, meta.from_open_id)
-    async with ctx.lock_for(session_id):
+    # 5. Serialize the same doc-user conversation; different docs/users run in parallel.
+    conversation_id = _conversation_id_for(meta)
+    async with ctx.lock_for(conversation_id):
         try:
             async with ctx.backend_semaphore:
                 answer = await asyncio.wait_for(
                     asyncio.to_thread(
                         ctx.backend.chat,
-                        session_id,
+                        conversation_id,
                         user_query,
                         doc_context=doc_prompt_context,
                         doc_context_provider=doc_context_provider,
@@ -504,7 +508,7 @@ async def handle_comment_event(
             _record_failure(
                 ctx,
                 meta,
-                session_id=session_id,
+                session_id=conversation_id,
                 stage="backend_chat",
                 error=exc,
                 fallback_reply_text=ctx.cfg.failure_handling.polite_reply_text,
@@ -527,7 +531,7 @@ async def handle_comment_event(
         _record_failure(
             ctx,
             meta,
-            session_id=session_id,
+            session_id=conversation_id,
             stage="backend_chat",
             error=RuntimeError((answer or "").strip()[:500] or "deerflow error fallback"),
             fallback_reply_text=ctx.cfg.failure_handling.polite_reply_text,
@@ -549,7 +553,7 @@ async def handle_comment_event(
         _record_failure(
             ctx,
             meta,
-            session_id=session_id,
+            session_id=conversation_id,
             stage="post_reply",
             error=RuntimeError("post_reply returned no reply_id"),
             fallback_reply_text=ctx.cfg.failure_handling.polite_reply_text,

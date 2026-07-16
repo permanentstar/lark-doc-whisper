@@ -261,6 +261,27 @@ def test_preflight_feishu_urls_keeps_only_readable_sheet_preview(monkeypatch):
     assert "数据仓库" in result.fetched_contents[0].text
 
 
+def test_preflight_feishu_urls_keeps_sheet_preview_generic(monkeypatch):
+    url = "https://bytedance.sg.larkoffice.com/sheets/sheet_token"
+    calls: list[tuple[str, str, int, int]] = []
+
+    def _fake_sheet_fetch(client, spreadsheet_token, *, sheet_id, start_row, max_rows):
+        calls.append(("preview", spreadsheet_token, start_row, max_rows))
+        return "### Sheet: Q3\n| name | value |\n| --- | --- |\n| t1 | 42 |"
+
+    monkeypatch.setattr("lark_doc_whisper.agent.url_fetch.fetch_sheet_text", _fake_sheet_fetch)
+
+    result = preflight_feishu_urls(
+        client=object(),
+        cfg=UrlFetchConfig(),
+        allowed_urls=(AllowedUrl(url=url, kind="feishu_sheets"),),
+    )
+
+    assert result.allowed is True
+    assert calls == [("preview", "sheet_token", 1, 6)]
+    assert "### Sheet: Q3" in result.fetched_contents[0].text
+
+
 def test_preflight_feishu_urls_returns_oauth_link_when_configured(monkeypatch):
     monkeypatch.setattr("lark_doc_whisper.agent.url_fetch.fetch_doc_text", lambda *_, **__: "")
 

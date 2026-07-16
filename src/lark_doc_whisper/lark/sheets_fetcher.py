@@ -100,6 +100,16 @@ def _render_markdown(sheet_title: str, values: list[list[Any]]) -> str:
     return "\n".join(lines)
 
 
+def _pick_sheet(sheets: list[dict[str, Any]], sheet_id: str | None) -> dict[str, Any] | None:
+    if not sheets:
+        return None
+    if sheet_id:
+        for sheet in sheets:
+            if str(sheet.get("sheet_id") or "") == sheet_id:
+                return sheet
+    return sheets[0]
+
+
 def fetch_sheet_text(
     client: lark.Client,
     spreadsheet_token: str,
@@ -125,14 +135,9 @@ def fetch_sheet_text(
     if not sheets:
         return ""
 
-    target = None
-    if sheet_id:
-        for s in sheets:
-            if str(s.get("sheet_id") or "") == sheet_id:
-                target = s
-                break
+    target = _pick_sheet(sheets, sheet_id)
     if target is None:
-        target = sheets[0]
+        return ""
 
     grid = (target.get("grid_properties") or {})
     row_count = int(grid.get("row_count") or 0)

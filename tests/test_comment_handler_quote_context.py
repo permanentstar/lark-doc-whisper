@@ -75,17 +75,24 @@ def _cfg() -> AppConfig:
     )
 
 
-def _event() -> SimpleNamespace:
+def _event(
+    *,
+    event_id: str = "evt_quote_ctx",
+    comment_id: str = "123",
+    reply_id: str = "456",
+    file_token: str = "doc_token",
+    user_open_id: str = "ou_user",
+) -> SimpleNamespace:
     return SimpleNamespace(
-        header=SimpleNamespace(event_id="evt_quote_ctx"),
+        header=SimpleNamespace(event_id=event_id),
         event=SimpleNamespace(
-            comment_id="123",
-            reply_id="456",
+            comment_id=comment_id,
+            reply_id=reply_id,
             is_mentioned=True,
             notice_meta=SimpleNamespace(
-                file_token="doc_token",
+                file_token=file_token,
                 file_type="docx",
-                from_user_id=SimpleNamespace(open_id="ou_user"),
+                from_user_id=SimpleNamespace(open_id=user_open_id),
                 to_user_id=SimpleNamespace(open_id="ou_bot"),
             ),
         ),
@@ -135,6 +142,31 @@ def test_handler_passes_quote_context_without_fetching_full_doc(monkeypatch):
     assert doc_context_provider is not None
     assert url_fetch_context is not None
     assert len(provider_calls) == 1
+
+
+def test_handler_reuses_doc_user_session_across_comments(monkeypatch):
+    backend = _Backend()
+    ctx = HandlerContext(cfg=_cfg(), api_client=object(), backend=backend, bot_open_id="ou_bot")
+
+    monkeypatch.setattr(comment_handler.seen_events, "is_seen", lambda *_, **__: False)
+    monkeypatch.setattr(comment_handler.seen_events, "mark_seen", lambda *_, **__: None)
+    monkeypatch.setattr(comment_handler, "get_reply_text", lambda *_, **__: "继续看这个文档")
+    monkeypatch.setattr(
+        comment_handler,
+        "get_comment_context",
+        lambda *_, **__: CommentContext(quote="接口契约原文", is_whole=False, anchor_block_id="blk_anchor"),
+    )
+    monkeypatch.setattr(comment_handler, "fetch_doc_text", lambda *_, **__: "")
+    monkeypatch.setattr(comment_handler, "post_reply", lambda *_, **__: "reply_1")
+
+    _run_handler(_event(event_id="evt_comment_1", comment_id="comment_1", reply_id="reply_1"), ctx)
+    _run_handler(_event(event_id="evt_comment_2", comment_id="comment_2", reply_id="reply_2"), ctx)
+
+    assert [call[0] for call in backend.calls] == [
+        "doc__doc_token__user__ou_user",
+        "doc__doc_token__user__ou_user",
+    ]
+    assert [call[2].comment_id for call in backend.calls] == ["comment_1", "comment_2"]
 
 
 def test_handler_fetches_document_for_whole_doc_comment(monkeypatch):

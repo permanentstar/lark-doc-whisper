@@ -68,6 +68,11 @@ def _build_context_message(ctx: DocPromptContext) -> SystemMessage:
         "<doc-comment-context>",
         f"<file_token>{ctx.file_token}</file_token>",
         f"<comment_id>{ctx.comment_id}</comment_id>",
+        "<context_rules>",
+        "当前服务未提供本地文件写入、导出文件或脚本执行工具；不要承诺当前工具集不存在的动作。",
+        "如果已有 url_content，必须优先基于其中的预览内容直接回答。",
+        "如果 url_content 不足，只能使用 fetch_url_content 按小范围增量读取。",
+        "</context_rules>",
     ]
     if ctx.quote:
         lines.extend(["<quote>", ctx.quote, "</quote>"])

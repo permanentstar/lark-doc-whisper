@@ -50,6 +50,32 @@ def test_injects_ephemeral_context_after_leading_system_messages():
     assert seen_messages[2].content == "总结下"
 
 
+def test_injected_context_describes_current_tool_boundaries():
+    middleware = DocumentContextMiddleware()
+    messages = [HumanMessage(content="统计表格")]
+    ctx = DocPromptContext(
+        file_token="doc_1",
+        comment_id="cmt_1",
+        contexts={"url_content": "<url-content>sheet preview</url-content>"},
+    )
+    token = current_doc_context.set(ctx)
+    seen_messages = []
+
+    def handler(request: ModelRequest) -> ModelResponse:
+        seen_messages.extend(request.messages)
+        return ModelResponse(result=[AIMessage(content="ok")])
+
+    try:
+        middleware.wrap_model_call(_request(messages), handler)
+    finally:
+        current_doc_context.reset(token)
+
+    injected = seen_messages[0].content
+    assert "当前服务未提供本地文件写入、导出文件或脚本执行工具" in injected
+    assert "不要承诺当前工具集不存在的动作" in injected
+    assert "fetch_url_content" in injected
+
+
 def test_no_context_passes_request_through_unchanged():
     middleware = DocumentContextMiddleware()
     messages = [HumanMessage(content="hello")]
